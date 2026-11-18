@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 180" width="820" height="180" role="img" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12">
+  <title>How the server turns static GTFS and trip updates into a positions feed</title>
+  <desc>The static GTFS feed gives the track between each pair of stops. The trip update feeds give which stops each vehicle is between. The tracker combines the two and places each vehicle on demand, served at /positions as a VehiclePosition feed.</desc>
+
+  <g fill="none" stroke="#6e7781" stroke-width="1.5">
+    <rect x="10" y="16" width="160" height="56" rx="6"/>
+    <rect x="10" y="108" width="160" height="56" rx="6"/>
+    <rect x="210" y="16" width="160" height="56" rx="6"/>
+    <rect x="210" y="108" width="160" height="56" rx="6"/>
+    <rect x="660" y="62" width="150" height="56" rx="6"/>
+    <path d="M170 44 H203"/>
+    <path d="M170 136 H203"/>
+    <path d="M370 44 H395 V80 H413"/>
+    <path d="M370 136 H395 V100 H413"/>
+    <path d="M500 90 H653"/>
+  </g>
+  <rect x="420" y="62" width="80" height="56" rx="6" fill="none" stroke="#2f81f7" stroke-width="2"/>
+  <g fill="#6e7781">
+    <path d="M210 44 l-8 -4 v8 z"/>
+    <path d="M210 136 l-8 -4 v8 z"/>
+    <path d="M420 80 l-8 -4 v8 z"/>
+    <path d="M420 100 l-8 -4 v8 z"/>
+    <path d="M660 90 l-8 -4 v8 z"/>
+  </g>
+
+  <g fill="#6e7781" text-anchor="middle">
+    <text x="90" y="40" font-weight="600">Static GTFS</text>
+    <text x="90" y="57">stops, shapes, stop times</text>
+    <text x="90" y="132" font-weight="600">TripUpdate feeds</text>
+    <text x="90" y="149">one or more</text>
+    <text x="290" y="40">Track between</text>
+    <text x="290" y="57">each pair of stops</text>
+    <text x="290" y="132">Stops each</text>
+    <text x="290" y="149">vehicle is between</text>
+    <text x="460" y="94" font-weight="600">Tracker</text>
+    <text x="580" y="80">on demand</text>
+    <text x="735" y="86" font-weight="600">/positions</text>
+    <text x="735" y="103">VehiclePosition feed</text>
+  </g>
+</svg>
