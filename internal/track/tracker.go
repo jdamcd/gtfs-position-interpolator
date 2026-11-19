@@ -224,9 +224,8 @@ func (t *Tracker) trainFromUpdate(tu *gtfs.TripUpdate, prev *train, header, now 
 }
 
 // nextLeg works out how to draw a train getting from wherever it is drawn
-// now to where the feed says it is or is heading, so that it never jumps.
-// A train reported standing at a stop it has not been drawn reaching is run
-// there promptly.
+// now to where the feed says it is or is heading. On the hop into that stop
+// it changes speed rather than jumping; on any other hop it is moved.
 func (t *Tracker) nextLeg(prev *train, obs observation, route string, now time.Time) *leg {
 	standing := obs.at != ""
 	target, eta := obs.to, obs.eta
@@ -244,16 +243,12 @@ func (t *Tracker) nextLeg(prev *train, obs observation, route string, now time.T
 	if origin == "" {
 		origin = prev.obs.to
 	}
-	var rest geo.Line
 	var distance, speed float64
 	unfinished := false
 	if l := prev.leg; l != nil {
 		origin = l.to
 		distance, speed = l.advance(now)
-		if distance < l.line.Length() {
-			unfinished = true
-			rest = l.line.Slice(distance, l.line.Length())
-		}
+		unfinished = distance < l.line.Length()
 	}
 
 	if target == origin {
@@ -275,21 +270,19 @@ func (t *Tracker) nextLeg(prev *train, obs observation, route string, now time.T
 		return &l
 	}
 
-	segment := t.static.Segment(origin, target)
-	// A segment with no run time is a straight line between stops that no
-	// train runs between: the trip has changed course, so start afresh.
-	if segment == nil || segment.RunTime == 0 || eta.IsZero() {
+	if standing && unfinished {
+		return nil
+	}
+	hop := t.static.Hop(origin, target)
+	// The train has skipped stops or changed course, so start afresh.
+	if hop == nil || eta.IsZero() || (obs.from != "" && obs.from != origin) {
 		if standing {
 			return nil
 		}
 		return t.estimateLeg(obs, route)
 	}
-	l := &leg{to: target, line: segment.Line, eta: eta, ramp: t.config.Ramp, anchorAt: now}
-	if unfinished {
-		l.line = geo.Join(rest, segment.Line)
-		l.anchorSpeed = speed
-	}
-	return l
+	// A train still short of origin starts from there at its current speed.
+	return &leg{to: target, line: hop.Line, eta: eta, ramp: t.config.Ramp, anchorAt: now, anchorSpeed: speed}
 }
 
 // estimateLeg times a hop for a train whose departure was never seen, by

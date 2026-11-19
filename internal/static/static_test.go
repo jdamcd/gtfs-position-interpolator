@@ -60,6 +60,20 @@ func TestSegmentChainsUnscheduledPairs(t *testing.T) {
 	checkSegment(t, network(t).Segment("102N", "104N"), 2000, 240*time.Second)
 }
 
+func TestHopIsOnlyBetweenStopsATrainRunsWithoutStopping(t *testing.T) {
+	data := network(t)
+	for pair, want := range map[[2]string]bool{
+		{"101N", "102N"}: true,
+		{"101N", "103N"}: true,
+		{"102N", "104N"}: false,
+		{"101N", "201N"}: false,
+	} {
+		if got := data.Hop(pair[0], pair[1]) != nil; got != want {
+			t.Errorf("hop from %s to %s: %v, want %v", pair[0], pair[1], got, want)
+		}
+	}
+}
+
 func TestSegmentFallsBackToStraightLine(t *testing.T) {
 	data := network(t)
 	s := data.Segment("101N", "201N")

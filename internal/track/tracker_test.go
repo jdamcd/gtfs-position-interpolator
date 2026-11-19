@@ -319,7 +319,7 @@ func TestMissedHopIsRunNotJumped(t *testing.T) {
 	checkPlaced(t, only(t, tracker.Feed(later.Add(40*time.Second))), data, "103N", 0, stopped, "103N")
 }
 
-func TestDepartureBeforeArrivingCarriesOnThroughTheStop(t *testing.T) {
+func TestTrainThatLeftAStopBeforeBeingDrawnThereStartsTheNextHop(t *testing.T) {
 	data := network(t)
 	tracker := New(data, config)
 	tracker.Apply("ace", message(t0, vehicle("1", "L1", "101N", stopped, t0)), t0)
@@ -331,8 +331,53 @@ func TestDepartureBeforeArrivingCarriesOnThroughTheStop(t *testing.T) {
 		vehicle("1", "L1", "102N", stopped, t0),
 		tripUpdate("1", "L1", call{"103N", later.Add(60 * time.Second)}),
 	), later)
-	checkPlaced(t, only(t, tracker.Feed(later)), data, "101N", 20*maxSpeed, inTransit, "103N")
+	checkPlaced(t, only(t, tracker.Feed(later)), data, "102N", 0, inTransit, "103N")
 	checkPlaced(t, only(t, tracker.Feed(later.Add(60*time.Second))), data, "103N", 0, inTransit, "103N")
+}
+
+func TestTrainReportedAtAStopBeyondItsHopIsDrawnThere(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	tracker.Apply("1234567", message(t0, vehicle("1", "L1", "101N", stopped, t0)), t0)
+	tracker.Apply("1234567", message(t0,
+		vehicle("1", "L1", "102N", inTransit, t0),
+		tripUpdate("1", "L1", call{"102N", t0.Add(120 * time.Second)}),
+	), t0)
+	later := t0.Add(60 * time.Second)
+	checkPlaced(t, only(t, tracker.Feed(later)), data, "101N", 500, inTransit, "102N")
+
+	tracker.Apply("1234567", message(later,
+		vehicle("1", "L1", "103N", stopped, later),
+		tripUpdate("1", "L1", call{"103N", later}),
+	), later)
+	checkPlaced(t, only(t, tracker.Feed(later)), data, "103N", 0, stopped, "103N")
+}
+
+func TestTrainThatSkippedStopsIsDrawnOnTheHopIntoItsNextStop(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	tracker.Apply("1234567", message(t0, vehicle("1", "L1", "101N", stopped, t0)), t0)
+	later := t0.Add(5 * time.Minute)
+	tracker.Apply("1234567", message(later,
+		vehicle("1", "L1", "104N", inTransit, later),
+		tripUpdate("1", "L1", call{"104N", later.Add(60 * time.Second)}),
+	), later)
+
+	checkPlaced(t, only(t, tracker.Feed(later)), data, "103N", 500, inTransit, "104N")
+}
+
+func TestTrainIsDrawnFromTheStopTheFeedSaysItLeft(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	tracker.Apply("ace", message(t0, vehicle("1", "L1", "101N", stopped, t0)), t0)
+	later := t0.Add(3 * time.Minute)
+	tracker.Apply("ace", message(later,
+		vehicle("1", "L1", "102N", stopped, later),
+		tripUpdate("1", "L1", call{"103N", later.Add(60 * time.Second)}),
+	), later)
+
+	// Expresses run 101N to 103N without stopping, but this train is past 102N.
+	checkPlaced(t, only(t, tracker.Feed(later)), data, "102N", 500, inTransit, "103N")
 }
 
 func TestChangeOfCourseStartsAfresh(t *testing.T) {

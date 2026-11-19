@@ -102,6 +102,11 @@ func (d *Data) Segment(from, to string) *Segment {
 	return s
 }
 
+// Hop returns the track some train runs nonstop between two stops, or nil.
+func (d *Data) Hop(from, to string) *Segment {
+	return d.segments[hop{from, to}]
+}
+
 func (d *Data) chain(from, to string) *Segment {
 	cameFrom := map[string]string{from: ""}
 	frontier := []string{from}
