@@ -1,8 +1,21 @@
 {
   "version": "1.0",
   "services": {
-    "web": {
+    "api": {
       "port": 8080
+    },
+    "web": {
+      "image": "ui",
+      "port": 80,
+      "health": {
+        "command": "wget -q -O /dev/null http://127.0.0.1/positions"
+      }
+    }
+  },
+  "images": {
+    "ui": {
+      "dockerfile": "ui/Dockerfile",
+      "context": "ui"
     }
   }
 }

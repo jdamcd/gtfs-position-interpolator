@@ -1,0 +1,9 @@
+:80 {
+	encode zstd gzip
+
+	@api path /positions /healthz
+	reverse_proxy @api api:8080
+
+	root * /srv
+	file_server
+}
