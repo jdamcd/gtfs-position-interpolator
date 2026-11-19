@@ -8,7 +8,6 @@ const POSITIONS_URL = import.meta.env.VITE_POSITIONS_URL;
 const ROUTE_LABELS = Object.fromEntries((import.meta.env.VITE_ROUTE_LABELS || "").split(",").filter(Boolean).map((pair) => pair.split(":")));
 const STATUSES = { INCOMING_AT: "arriving", IN_TRANSIT_TO: "in transit", STOPPED_AT: "stopped" };
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
-const TRAIL_LENGTH = 600;
 const POLL_INTERVAL = 5000;
 const NETWORK_INTERVAL = 60 * 60 * 1000;
 const DEFAULT_COLOR = "555555";
@@ -31,9 +30,9 @@ let routes = {};
 let stops = {};
 let tracks = [];
 let stations = [];
-let trail = [];
 let framed = Boolean(VIEW.center);
 let moved = false;
+let smooth = $("smooth").checked;
 let selectedId = null;
 let inFlight = false;
 let setupError = null;
@@ -140,7 +139,7 @@ function ensureImage(id, draw) {
 
 function addLayers() {
   const labels = map.getStyle().layers.find((layer) => layer.type === "symbol")?.id;
-  for (const source of ["tracks", "stations", "trail", "vehicles"]) map.addSource(source, { type: "geojson", data: EMPTY });
+  for (const source of ["tracks", "stations", "vehicles"]) map.addSource(source, { type: "geojson", data: EMPTY });
   map.addLayer({
     id: "tracks",
     type: "line",
@@ -165,12 +164,6 @@ function addLayers() {
       "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 11, 1.5, 14, 2.5, 17, 3],
     },
   }, labels);
-  map.addLayer({
-    id: "trail",
-    type: "line",
-    source: "trail",
-    paint: { "line-color": DARK ? "#eee" : "#111", "line-width": 2, "line-opacity": 0.6 },
-  });
   map.addLayer({
     id: "headings",
     type: "symbol",
@@ -227,13 +220,10 @@ function drawStations() {
   });
 }
 
-function drawTrail() {
-  map.getSource("trail").setData({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: trail } });
-}
-
 // Trains glide to each new position over the time until the next poll, so
 // the map runs one poll behind the feed.
 function positionAt(vehicle, now) {
+  if (!smooth) return vehicle.to;
   const t = Math.min(1, (now - vehicle.start) / POLL_INTERVAL);
   return [vehicle.from[0] + (vehicle.to[0] - vehicle.from[0]) * t, vehicle.from[1] + (vehicle.to[1] - vehicle.from[1]) * t];
 }
@@ -243,7 +233,7 @@ function animate(now) {
     moved = false;
     const features = [];
     for (const vehicle of vehicles.values()) {
-      if (now - vehicle.start < POLL_INTERVAL) moved = true;
+      if (smooth && now - vehicle.start < POLL_INTERVAL) moved = true;
       const selected = vehicle.properties.id === selectedId;
       features.push({
         type: "Feature",
@@ -352,18 +342,10 @@ function renderSelected(selected) {
   $("sel-timestamp").textContent = vehicle.timestamp
     ? `${vehicle.timestamp}, ${(selected.headerTimestamp - vehicle.timestamp).toFixed(0)} s before header`
     : "not set";
-  const at = [vehicle.position.longitude, vehicle.position.latitude];
-  const last = trail[trail.length - 1];
-  if (!last || last[0] !== at[0] || last[1] !== at[1]) {
-    trail = [...trail, at].slice(-TRAIL_LENGTH);
-    drawTrail();
-  }
 }
 
 function select(id) {
   selectedId = id;
-  trail = [];
-  drawTrail();
   moved = true;
   refresh();
 }
@@ -439,6 +421,13 @@ async function start() {
   $("routes").addEventListener("change", () => {
     drawTracks();
     refresh();
+  });
+  $("smooth").addEventListener("change", (event) => {
+    smooth = event.target.checked;
+    // Turned back on mid-poll, trains wait where they are for the next
+    // position rather than jumping back to finish the glide.
+    for (const vehicle of vehicles.values()) vehicle.from = vehicle.to;
+    moved = true;
   });
 
   await loadNetwork();
