@@ -389,6 +389,29 @@ func TestChangeOfCourseStartsAfresh(t *testing.T) {
 	checkPlaced(t, only(t, tracker.Feed(t0)), data, "201N", 0, stopped, "201N")
 }
 
+func TestTrainAtTheEndOfItsTripIsLeftOutAfterThreeMinutes(t *testing.T) {
+	tracker := New(network(t), config)
+	arrived := t0.Add(-30 * time.Second)
+	finished := []*gtfs.FeedEntity{
+		vehicle("1", "L1", "104N", stopped, arrived),
+		tripUpdate("1", "L1"),
+		vehicle("1", "L2", "104N", stopped, arrived),
+		tripUpdate("1", "L2", call{"104N", arrived}),
+		vehicle("2", "X1", "103N", stopped, arrived),
+		tripUpdate("2", "X1", call{"103N", arrived}, call{"104N", t0.Add(5 * time.Minute)}),
+	}
+	tracker.Apply("1234567", message(t0, finished...), t0)
+	if got := len(tracker.Feed(t0).Entity); got != 3 {
+		t.Fatalf("got %d entities 30 s after arriving, want 3", got)
+	}
+
+	later := t0.Add(3 * time.Minute)
+	tracker.Apply("1234567", message(later, finished...), later)
+	if v := only(t, tracker.Feed(later)); v.Trip.GetTripId() != "X1" {
+		t.Errorf("kept trip %s, want only X1, which has a stop left", v.Trip.GetTripId())
+	}
+}
+
 func TestStaleTrainsAreLeftOut(t *testing.T) {
 	tracker := New(network(t), config)
 	tracker.Apply("1234567", message(t0,

@@ -19,6 +19,9 @@ type observation struct {
 	eta      time.Time
 	incoming bool
 	sequence *uint32
+
+	// finished is a train at its last stop, which feeds can list for hours.
+	finished bool
 }
 
 // observe reads a train's whereabouts from its vehicle entity and trip
@@ -38,7 +41,7 @@ func observe(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, known func(stop strin
 	listedFirst := len(updates) == 0 || updates[0].GetStopId() == stop
 
 	if stopped && listedFirst && known(stop) {
-		return observation{at: stop, sequence: v.CurrentStopSequence}, true
+		return observation{at: stop, sequence: v.CurrentStopSequence, finished: tu != nil && len(updates) <= 1}, true
 	}
 
 	var o observation
@@ -74,7 +77,7 @@ func observe(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, known func(stop strin
 }
 
 // A train is shown standing at its last stop for this long after arriving.
-const terminalDwell = time.Minute
+const terminalDwell = 3 * time.Minute
 
 // A visit is one stop of a trip, with the times the train is predicted or
 // known to be there.

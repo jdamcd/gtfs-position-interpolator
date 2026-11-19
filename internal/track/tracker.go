@@ -165,7 +165,7 @@ func (t *Tracker) trainFromVehicle(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate,
 		return nil
 	}
 	obs, ok := observe(v, tu, t.static.HasStop)
-	if !ok {
+	if !ok || (obs.finished && header.Sub(timestamp) > terminalDwell) {
 		return nil
 	}
 	trip := t.withRoute(v.GetTrip())
