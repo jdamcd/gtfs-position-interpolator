@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
@@ -22,12 +23,117 @@ type Feed struct {
 
 type Handler func(feed string, msg *gtfs.FeedMessage, fetched time.Time)
 
-func Poll(ctx context.Context, client *http.Client, f Feed, interval time.Duration, handle Handler) {
-	ticker := time.NewTicker(interval)
+// A Poller fetches the feeds only while they are in demand.
+type Poller struct {
+	client   *http.Client
+	feeds    []Feed
+	interval time.Duration
+	idle     time.Duration
+	handle   Handler
+	reset    func()
+
+	mu     sync.Mutex
+	asked  time.Time
+	active bool
+	ready  chan struct{}
+	wake   chan struct{}
+}
+
+// reset is called when polling stops, since what the handler last saw will be
+// stale when it restarts.
+func NewPoller(client *http.Client, feeds []Feed, interval, idle time.Duration, handle Handler, reset func()) *Poller {
+	return &Poller{
+		client:   client,
+		feeds:    feeds,
+		interval: interval,
+		idle:     idle,
+		handle:   handle,
+		reset:    reset,
+		wake:     make(chan struct{}, 1),
+	}
+}
+
+// Demand starts the polling if it had stopped. The channel is closed once
+// every feed has been tried since it started.
+func (p *Poller) Demand() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.asked = time.Now()
+	if !p.active {
+		p.active = true
+		p.ready = make(chan struct{})
+		p.wake <- struct{}{}
+	}
+	return p.ready
+}
+
+func (p *Poller) Active() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.active
+}
+
+func (p *Poller) Run(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.wake:
+		}
+		p.pollWhileInDemand(ctx)
+	}
+}
+
+func (p *Poller) pollWhileInDemand(ctx context.Context) {
+	p.mu.Lock()
+	ready := p.ready
+	p.mu.Unlock()
+
+	slog.Info("polling feeds", "interval", p.interval)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var polls, first sync.WaitGroup
+	for _, f := range p.feeds {
+		first.Add(1)
+		polls.Go(func() { p.poll(ctx, f, sync.OnceFunc(first.Done)) })
+	}
+	go func() {
+		first.Wait()
+		close(ready)
+	}()
+
+	p.waitForIdle(ctx)
+	cancel()
+	polls.Wait()
+	p.reset()
+	slog.Info("polling stopped", "idle", p.idle)
+}
+
+func (p *Poller) waitForIdle(ctx context.Context) {
+	for {
+		p.mu.Lock()
+		left := p.idle - time.Since(p.asked)
+		if left <= 0 {
+			p.active = false
+		}
+		p.mu.Unlock()
+		if left <= 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(left):
+		}
+	}
+}
+
+func (p *Poller) poll(ctx context.Context, f Feed, tried func()) {
+	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 	var last uint64
 	for {
-		msg, err := get(ctx, client, f)
+		msg, err := get(ctx, p.client, f)
 		switch {
 		case err != nil:
 			if ctx.Err() == nil {
@@ -37,8 +143,9 @@ func Poll(ctx context.Context, client *http.Client, f Feed, interval time.Durati
 		// whether it has changed.
 		case msg.GetHeader().GetTimestamp() != last || last == 0:
 			last = msg.GetHeader().GetTimestamp()
-			handle(f.Name, msg, time.Now())
+			p.handle(f.Name, msg, time.Now())
 		}
+		tried()
 		select {
 		case <-ctx.Done():
 			return

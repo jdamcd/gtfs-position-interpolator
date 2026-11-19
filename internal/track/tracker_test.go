@@ -192,6 +192,18 @@ func TestApplyReplacesFeedSnapshot(t *testing.T) {
 	}
 }
 
+func TestResetForgetsEveryTrain(t *testing.T) {
+	tracker := New(network(t), config)
+	tracker.Apply("1234567", message(t0, vehicle("1", "L1", "101N", stopped, t0)), t0)
+	tracker.Reset()
+	if got := len(tracker.Feed(t0).Entity); got != 0 {
+		t.Errorf("got %d entities after a reset, want 0", got)
+	}
+	if got := len(tracker.Status()); got != 0 {
+		t.Errorf("got %d feeds reported after a reset, want 0", got)
+	}
+}
+
 func TestTrainSeenLeavingStartsFromTheStop(t *testing.T) {
 	data := network(t)
 	tracker := New(data, config)

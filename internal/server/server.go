@@ -17,6 +17,15 @@ import (
 // feeds normally change every 15 seconds or so.
 const staleAfter = 2 * time.Minute
 
+// The longest a request that restarts the polling waits for the feeds.
+const coldWait = 5 * time.Second
+
+type Poller interface {
+	// The channel is closed once every feed has been tried.
+	Demand() <-chan struct{}
+	Active() bool
+}
+
 type feedHealth struct {
 	AgeSeconds *int64 `json:"age_seconds"`
 	Vehicles   int    `json:"vehicles"`
@@ -28,6 +37,7 @@ type feedHealth struct {
 // places.
 type positions struct {
 	tracker *track.Tracker
+	poller  Poller
 	cache   time.Duration
 	now     func() time.Time
 
@@ -54,6 +64,12 @@ func (p *positions) current() (*gtfs.FeedMessage, []byte, error) {
 }
 
 func (p *positions) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-p.poller.Demand():
+	case <-time.After(coldWait):
+	case <-r.Context().Done():
+		return
+	}
 	feed, body, err := p.current()
 	if routes := routeFilter(r); err == nil && len(routes) > 0 {
 		filtered := &gtfs.FeedMessage{Header: feed.Header}
@@ -76,19 +92,25 @@ func (p *positions) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // New serves the feed and a health report. The feed is recomputed at most
 // once per cache period; zero computes it for every request.
-func New(tracker *track.Tracker, feeds []string, cache time.Duration) http.Handler {
-	return newHandler(tracker, feeds, cache, time.Now)
+func New(tracker *track.Tracker, poller Poller, feeds []string, cache time.Duration) http.Handler {
+	return newHandler(tracker, poller, feeds, cache, time.Now)
 }
 
-func newHandler(tracker *track.Tracker, feeds []string, cache time.Duration, now func() time.Time) http.Handler {
+func newHandler(tracker *track.Tracker, poller Poller, feeds []string, cache time.Duration, now func() time.Time) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /positions", &positions{tracker: tracker, cache: cache, now: now})
+	mux.Handle("GET /positions", &positions{tracker: tracker, poller: poller, cache: cache, now: now})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		status := tracker.Status()
 		report := map[string]feedHealth{}
 		healthy := true
-		for _, name := range feeds {
+		// An idle poller has no feeds to be stale.
+		polling := poller.Active()
+		polled := feeds
+		if !polling {
+			polled = nil
+		}
+		for _, name := range polled {
 			h := feedHealth{Vehicles: status[name].Vehicles}
 			if header := status[name].Header; !header.IsZero() {
 				age := int64(now.Sub(header).Seconds())
@@ -103,7 +125,7 @@ func newHandler(tracker *track.Tracker, feeds []string, cache time.Duration, now
 		if !healthy {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"healthy": healthy, "feeds": report})
+		json.NewEncoder(w).Encode(map[string]any{"healthy": healthy, "polling": polling, "feeds": report})
 	})
 	return mux
 }

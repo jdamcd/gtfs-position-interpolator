@@ -26,6 +26,8 @@ const (
 	staticRefresh = 24 * time.Hour
 	maxAge        = 10 * time.Minute
 	ramp          = 15 * time.Second
+	// How long polling continues after the last request for positions.
+	idle = time.Minute
 )
 
 func defaultCacheDir() string {
@@ -86,10 +88,11 @@ func main() {
 	var names []string
 	for _, f := range cfg.Feeds {
 		names = append(names, f.Name)
-		go feed.Poll(ctx, client, f, time.Duration(cfg.Poll), tracker.Apply)
 	}
+	poller := feed.NewPoller(client, cfg.Feeds, time.Duration(cfg.Poll), idle, tracker.Apply, tracker.Reset)
+	go poller.Run(ctx)
 
-	srv := &http.Server{Addr: *addr, Handler: server.New(tracker, names, cache)}
+	srv := &http.Server{Addr: *addr, Handler: server.New(tracker, poller, names, cache)}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

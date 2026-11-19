@@ -40,7 +40,7 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	c := Config{Poll: Duration(15 * time.Second)}
+	c := Config{Poll: Duration(5 * time.Second)}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&c); err != nil {

@@ -84,6 +84,14 @@ func (t *Tracker) SetStatic(data *static.Data) {
 	t.static = data
 }
 
+// Reset forgets every train, so that snapshots after a gap in polling are
+// read afresh.
+func (t *Tracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.feeds = map[string]snapshot{}
+}
+
 type FeedStatus struct {
 	// Header is the upstream timestamp of the latest snapshot applied.
 	Header   time.Time

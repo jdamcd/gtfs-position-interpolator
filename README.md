@@ -22,6 +22,8 @@ go run . -config configs/nyc-subway.json
 
 The feed is at <http://localhost:8080/positions>. The static feed is downloaded at startup, cached on disk and refreshed daily.
 
+The trip update feeds are polled only while `/positions` is in use: every 5 seconds (`poll` in the config), stopping once a minute has passed without a request. The first request after that waits for the feeds to be fetched again.
+
 Flags: `-config` (required), `-addr` (default `:8080`) and `-cache-dir` (where the static feed is cached).
 
 ## Configuration
@@ -33,7 +35,7 @@ See `configs/nyc-subway.json` for an example.
 | Path | Description |
 |---|---|
 | `/positions` | The VehiclePosition feed, as protobuf. `?route=A,C,E` limits it to those route IDs. Readable from a browser on any origin. |
-| `/healthz` | JSON health of each upstream feed. Returns 503 if any has not changed for two minutes. |
+| `/healthz` | JSON health of each upstream feed. Returns 503 if any has not changed for two minutes while being polled. |
 
 Each vehicle's `timestamp` is its last upstream update. The header timestamp is when the positions were computed.
 

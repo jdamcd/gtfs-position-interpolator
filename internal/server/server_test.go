@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
@@ -43,6 +44,24 @@ func newTracker(t *testing.T) *track.Tracker {
 	return track.New(data, track.Config{MaxAge: 10 * time.Minute})
 }
 
+type poller struct {
+	active bool
+	ready  chan struct{}
+}
+
+func (p *poller) Demand() <-chan struct{} {
+	p.active = true
+	return p.ready
+}
+
+func (p *poller) Active() bool { return p.active }
+
+func polling() *poller {
+	ready := make(chan struct{})
+	close(ready)
+	return &poller{active: true, ready: ready}
+}
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -54,7 +73,7 @@ func TestPositionsFiltersByRoute(t *testing.T) {
 	now := time.Now()
 	tracker := newTracker(t)
 	tracker.Apply("a", snapshot(now, standing("1", "L1", "101N", now), standing("2", "X1", "104N", now)), now)
-	h := New(tracker, []string{"a"}, 0)
+	h := New(tracker, polling(), []string{"a"}, 0)
 
 	for path, want := range map[string]int{
 		"/positions":                 2,
@@ -83,7 +102,7 @@ func TestPositionsFiltersByRoute(t *testing.T) {
 func TestHealthz(t *testing.T) {
 	now := time.Now()
 	tracker := newTracker(t)
-	h := New(tracker, []string{"a", "b"}, 0)
+	h := New(tracker, polling(), []string{"a", "b"}, 0)
 
 	tracker.Apply("a", snapshot(now, standing("1", "L1", "101N", now)), now)
 	rec := get(t, h, "/healthz")
@@ -118,6 +137,72 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestHealthzIsHealthyWhileNothingIsPolled(t *testing.T) {
+	idle := &poller{ready: make(chan struct{})}
+	h := New(newTracker(t), idle, []string{"a", "b"}, 0)
+
+	rec := get(t, h, "/healthz")
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d with no feeds polled, want 200", rec.Code)
+	}
+	var report struct {
+		Healthy, Polling bool
+		Feeds            map[string]any
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Healthy || report.Polling || len(report.Feeds) != 0 {
+		t.Errorf("report %+v, want healthy, not polling and no feeds", report)
+	}
+	if idle.active {
+		t.Error("the health check started the polling")
+	}
+}
+
+func TestPositionsWaitForTheFeedsWhenPollingRestarts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		tracker := newTracker(t)
+		idle := &poller{ready: make(chan struct{})}
+		h := New(tracker, idle, []string{"a"}, 0)
+
+		var rec *httptest.ResponseRecorder
+		go func() { rec = get(t, h, "/positions") }()
+		synctest.Wait()
+		if rec != nil {
+			t.Fatal("answered before the feeds were fetched")
+		}
+		if !idle.active {
+			t.Error("the request did not start the polling")
+		}
+
+		tracker.Apply("a", snapshot(now, standing("1", "L1", "101N", now)), now)
+		close(idle.ready)
+		synctest.Wait()
+		if rec == nil {
+			t.Fatal("not answered once the feeds were fetched")
+		}
+		if got := len(decode(t, rec).Entity); got != 1 {
+			t.Errorf("%d vehicles, want the 1 fetched", got)
+		}
+	})
+}
+
+func TestPositionsDoNotWaitLongForASlowFeed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := New(newTracker(t), &poller{ready: make(chan struct{})}, []string{"a"}, 0)
+
+		var rec *httptest.ResponseRecorder
+		go func() { rec = get(t, h, "/positions") }()
+		time.Sleep(coldWait)
+		synctest.Wait()
+		if rec == nil || rec.Code != http.StatusOK {
+			t.Fatal("not answered while a feed was still being fetched")
+		}
+	})
+}
+
 func decode(t *testing.T, rec *httptest.ResponseRecorder) *gtfs.FeedMessage {
 	t.Helper()
 	feed := &gtfs.FeedMessage{}
@@ -132,7 +217,7 @@ func TestPositionsAreComputedOncePerCachePeriod(t *testing.T) {
 	now := start
 	tracker := newTracker(t)
 	tracker.Apply("a", snapshot(now, standing("1", "L1", "101N", now), standing("2", "X1", "104N", now)), now)
-	h := newHandler(tracker, []string{"a"}, 5*time.Second, func() time.Time { return now })
+	h := newHandler(tracker, polling(), []string{"a"}, 5*time.Second, func() time.Time { return now })
 
 	first := get(t, h, "/positions")
 
@@ -163,7 +248,7 @@ func TestPositionsAreComputedOncePerCachePeriod(t *testing.T) {
 func TestPositionsWithoutACacheAreComputedPerRequest(t *testing.T) {
 	now := time.Now()
 	tracker := newTracker(t)
-	h := newHandler(tracker, []string{"a"}, 0, func() time.Time { return now })
+	h := newHandler(tracker, polling(), []string{"a"}, 0, func() time.Time { return now })
 
 	if got := len(decode(t, get(t, h, "/positions")).Entity); got != 0 {
 		t.Fatalf("%d vehicles before any feed, want 0", got)
