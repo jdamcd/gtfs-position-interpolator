@@ -146,6 +146,17 @@ func TestStoppedAtUnlistedStopHasLeftIt(t *testing.T) {
 	checkPlaced(t, only(t, tracker.Feed(t0)), data, "102N", 750, inTransit, "103N")
 }
 
+func TestVehicleAheadOfItsTripUpdateIsAtTheStopItNames(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	tracker.Apply("ace", message(t0,
+		vehicle("1", "L1", "103N", stopped, t0),
+		tripUpdate("1", "L1", call{"102N", t0.Add(-5 * time.Second)}, call{"103N", t0}, call{"104N", t0.Add(2 * time.Minute)}),
+	), t0)
+
+	checkPlaced(t, only(t, tracker.Feed(t0)), data, "103N", 0, stopped, "103N")
+}
+
 func TestUnknownStopsArePassedThrough(t *testing.T) {
 	data := network(t)
 	tracker := New(data, config)
