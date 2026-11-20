@@ -13,8 +13,8 @@ import (
 	"github.com/jdamcd/gtfs-position-interpolator/internal/track"
 )
 
-// A feed that has not changed for this long is reported unhealthy. Upstream
-// feeds normally change every 15 seconds or so.
+// A feed unchanged for this long is unhealthy: most change several times a
+// minute.
 const staleAfter = 2 * time.Minute
 
 // The longest a request that restarts the polling waits for the feeds.
@@ -32,9 +32,8 @@ type feedHealth struct {
 	Healthy    bool   `json:"healthy"`
 }
 
-// positions computes the feed at most once per cache period, however many
-// requests arrive, so that every client sees the same vehicles in the same
-// places.
+// positions computes the feed at most once per cache period, so every client
+// sees the same vehicles in the same places.
 type positions struct {
 	tracker *track.Tracker
 	poller  Poller
@@ -90,8 +89,7 @@ func (p *positions) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-// New serves the feed and a health report. The feed is recomputed at most
-// once per cache period; zero computes it for every request.
+// A zero cache period computes the feed for every request.
 func New(tracker *track.Tracker, poller Poller, feeds []string, cache time.Duration) http.Handler {
 	return newHandler(tracker, poller, feeds, cache, time.Now)
 }

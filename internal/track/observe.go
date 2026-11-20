@@ -6,13 +6,13 @@ import (
 	"github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
 )
 
-// An observation is where one feed snapshot says a train is: either standing
-// at a stop, or on its way to one.
+// An observation is where one snapshot puts a train: standing at a stop, or
+// on its way to one.
 type observation struct {
 	at string
 
-	// from is set only when the feed or the schedule names the stop the
-	// train left, and departed only when the feed says when it left.
+	// from is set only when the feed or schedule names the stop the train
+	// left, and departed only when the feed says when.
 	from     string
 	departed time.Time
 	to       string
@@ -25,15 +25,13 @@ type observation struct {
 }
 
 // observe reads a train's whereabouts from its vehicle entity and trip
-// update. The feeds disagree on what current_status means, so the trip
-// update decides:
-//   - the numbered lines and the L report STOPPED_AT only at the first stop
-//     still listed in the trip update;
-//   - the lettered lines keep reporting STOPPED_AT the previous stop while
-//     the train is moving, and the stop drops out of the trip update once
-//     the train has left it.
+// update. Feeds disagree on what current_status means, so the trip update
+// decides:
+//   - some report STOPPED_AT only at the first stop still listed;
+//   - others keep reporting STOPPED_AT the previous stop while the train
+//     moves, dropping that stop from the trip update once it has left.
 //
-// Stops missing from the static feed are skipped over.
+// Stops missing from the static feed are skipped.
 func observe(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, known func(stop string) bool) (observation, bool) {
 	updates := tu.GetStopTimeUpdate()
 	stop := v.GetStopId()
@@ -87,9 +85,9 @@ type visit struct {
 	arrival, departure time.Time
 }
 
-// listedVisits takes a trip's visits from the absolute times in its trip
-// update. Skipped stops, stops with no time and stops missing from the
-// static feed are left out.
+// listedVisits takes visits from the absolute times in a trip update,
+// leaving out stops that are skipped, untimed or missing from the static
+// feed.
 func listedVisits(tu *gtfs.TripUpdate, known func(stop string) bool) []visit {
 	var visits []visit
 	for _, u := range tu.GetStopTimeUpdate() {
@@ -111,13 +109,12 @@ func listedVisits(tu *gtfs.TripUpdate, known func(stop string) bool) []visit {
 	return visits
 }
 
-// observeVisits reads a train's whereabouts from the times of its visits
-// alone, for feeds with no vehicle entities. The train is between the last
-// stop whose time has passed and the first whose time has not.
+// observeVisits places a train by its visit times alone, for feeds with no
+// vehicle entities: between the last stop whose time has passed and the
+// first whose has not.
 //
-// An observation with neither at nor from is a train whose first listed
-// stop is still ahead: feeds that drop stops as they are passed look like
-// this, and so does a trip that has not started.
+// With neither at nor from, the first listed stop is still ahead: the feed
+// drops stops as they are passed, or the trip has not started.
 func observeVisits(visits []visit, now time.Time) (observation, bool) {
 	if len(visits) == 0 {
 		return observation{}, false

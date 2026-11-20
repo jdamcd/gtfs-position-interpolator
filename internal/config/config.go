@@ -57,9 +57,8 @@ func Load(path string) (Config, error) {
 
 var reference = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
-// expand fills ${NAME} references in URLs and header values from the
-// environment, so that API keys stay out of the config file. Any other $ is
-// left alone, since some feed URLs have one of their own.
+// expand fills ${NAME} in URLs and headers from the environment, keeping API
+// keys out of the config file. Any other $ is left alone: some URLs have one.
 func (c *Config) expand() error {
 	var missing []string
 	fill := func(s string) string {

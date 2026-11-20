@@ -22,18 +22,17 @@ import (
 )
 
 const (
-	// A stop further than this from its trip's shape means the shape can't be
-	// trusted for the hops either side of it.
+	// A shape further than this from a stop is not trusted for the hops either
+	// side of it.
 	maxStopOffset = 300.0
 	maxChainHops  = 10
 )
 
-// Segment is the track between two stops that some train runs between
-// without stopping.
+// Segment is the track between two stops that some train runs nonstop.
 type Segment struct {
 	Line geo.Line
-	// RunTime is the median scheduled time, or zero when no schedule covers
-	// this pair of stops directly.
+	// RunTime is the median scheduled time, or zero if no trip runs the pair
+	// directly.
 	RunTime time.Duration
 }
 
@@ -51,8 +50,7 @@ type origin struct {
 	routes map[string]int
 }
 
-// StopTime is one scheduled call of a trip. Times are in seconds from the
-// start of the service day, or -1 where the schedule gives none.
+// Times are in seconds from the start of the service day, or -1 for none.
 type StopTime struct {
 	Sequence           uint32
 	Stop               string
@@ -61,7 +59,7 @@ type StopTime struct {
 
 type Data struct {
 	Stops map[string]geo.Point
-	// Location is the agency's timezone, or nil if the feed does not give one.
+	// Location is the agency's timezone, or nil if the feed gives none.
 	Location *time.Location
 
 	stopIDs   []string
@@ -77,9 +75,8 @@ type Data struct {
 	derived map[hop]*Segment
 }
 
-// Segment returns the track from one stop to another. Pairs that no scheduled
-// trip runs directly are chained from shorter segments, and failing that
-// drawn as a straight line. It returns nil if either stop is unknown.
+// Segment chains shorter segments for a pair no trip runs directly, and
+// failing that draws a straight line. It returns nil for an unknown stop.
 func (d *Data) Segment(from, to string) *Segment {
 	if s := d.segments[hop{from, to}]; s != nil {
 		return s
@@ -141,8 +138,8 @@ func (d *Data) Bearing(stop string) (float64, bool) {
 	return b, ok
 }
 
-// Predecessor guesses which stop a train on the given route was at before
-// this one, preferring stops that route is scheduled to come from.
+// Predecessor guesses the stop a train came from, preferring those its route
+// is scheduled to come from.
 func (d *Data) Predecessor(to, route string) string {
 	best, bestTrips := "", 0
 	for _, o := range d.previous[to] {
@@ -156,8 +153,8 @@ func (d *Data) Predecessor(to, route string) string {
 	return best
 }
 
-// Schedule returns a trip's calls in stop sequence order, or nil for a trip
-// that is not in the feed.
+// Schedule returns a trip's calls in stop sequence order, or nil for an
+// unknown trip.
 func (d *Data) Schedule(tripID string) []StopTime {
 	times := d.schedules[tripID]
 	if times == nil {
@@ -174,10 +171,9 @@ func (d *Data) Route(tripID string) string {
 	return d.trips[tripID].route
 }
 
-// PreviousStop finds one of a trip's calls, by stop sequence if given and
-// otherwise by stop, and returns the stop the trip calls at before it. The
-// result is "" for the trip's first call. It reports false if the trip or
-// the call is not in the schedule.
+// PreviousStop finds a call by stop sequence if given, otherwise by stop, and
+// returns the stop called at before it: "" for the first call. It reports
+// false if the call is not in the schedule.
 func (d *Data) PreviousStop(tripID, stop string, sequence *uint32) (string, bool) {
 	times := d.schedules[tripID]
 	for i, st := range times {
@@ -202,8 +198,8 @@ func (d *Data) HasStop(id string) bool {
 	return ok
 }
 
-// Every stop time in the feed is kept, so stops are held as an index into
-// Data.stopIDs to keep each one to 16 bytes.
+// Every stop time in the feed is kept, so stops are indexes into
+// Data.stopIDs to hold each one to 16 bytes.
 type stopTime struct {
 	sequence           uint32
 	stop               uint32
@@ -238,8 +234,8 @@ func Parse(zipped []byte) (*Data, error) {
 		return nil, err
 	}
 
-	// Only trip updates that give delays need the timezone, so a feed with
-	// none, or one that cannot be read, still loads.
+	// Only trip updates giving delays need the timezone, so a feed without a
+	// readable one still loads.
 	var location *time.Location
 	err = readTable(zr, "agency.txt", []string{"agency_timezone?"}, func(row []string) error {
 		zone := strings.TrimSpace(row[0])
@@ -431,9 +427,9 @@ func Parse(zipped []byte) (*Data, error) {
 }
 
 // projectStops places each stop on the shape in travel order. Each search
-// starts where the previous stop landed and is bounded by how far apart the
-// two stops are, so a shape that passes the same place twice can't capture
-// a stop on the wrong pass.
+// starts where the last stop landed and is bounded by the distance between
+// the two, so a shape passing a place twice can't capture a stop on the
+// wrong pass.
 func projectStops(shape geo.Line, ids []string, stops map[string]geo.Point) (dists, aways []float64) {
 	dists = make([]float64, len(ids))
 	aways = make([]float64, len(ids))
@@ -477,8 +473,8 @@ func parsePoint(lat, lon string) (geo.Point, error) {
 	return geo.Point{Lat: la, Lon: lo}, nil
 }
 
-// parseClock reads a GTFS HH:MM:SS time, which may run past 24:00:00, as
-// seconds. It returns -1 for a blank or malformed time.
+// parseClock reads HH:MM:SS, which may run past 24:00:00, as seconds, or -1
+// if blank or malformed.
 func parseClock(s string) int {
 	parts := strings.Split(strings.TrimSpace(s), ":")
 	if len(parts) != 3 {
@@ -496,7 +492,7 @@ func parseClock(s string) int {
 }
 
 // readTable calls each with the named columns of every row. A column named
-// with a trailing "?" may be absent, and is then read as empty.
+// with a trailing "?" may be absent, and reads as empty.
 func readTable(zr *zip.Reader, name string, columns []string, each func(row []string) error) error {
 	f, err := zr.Open(name)
 	if err != nil {

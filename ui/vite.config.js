@@ -5,9 +5,8 @@ const HOUR = 60 * 60 * 1000;
 const RETRY = 5 * 60 * 1000;
 
 // Serves network.json, built from the static GTFS feed, from the dev and
-// preview servers, rebuilding it once it is older than the refresh period.
-// It is also written into the production build, for hosts that only serve
-// files.
+// preview servers, rebuilding it once older than the refresh period. The
+// production build gets a copy, for hosts that only serve files.
 function network(source, refresh) {
   let current = null;
   let building = null;

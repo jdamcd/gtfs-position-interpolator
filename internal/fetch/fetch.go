@@ -9,8 +9,7 @@ import (
 	"strings"
 )
 
-// Get requests a URL with the given headers. A failed request is reported
-// without its URL, which may hold an API key and would otherwise be logged.
+// Get's errors leave out the URL, which may hold an API key.
 func Get(ctx context.Context, client *http.Client, address string, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {

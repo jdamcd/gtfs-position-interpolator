@@ -222,7 +222,7 @@ func TestTrainSeenLeavingStartsFromTheStop(t *testing.T) {
 	checkPlaced(t, only(t, tracker.Feed(later.Add(50*time.Second))), data, "102N", 500, inTransit, "103N")
 }
 
-func TestLetteredLineTrainSeenLeavingStartsFromTheStop(t *testing.T) {
+func TestTrainWhoseStopDropsOutOfItsTripUpdateStartsFromTheStop(t *testing.T) {
 	data := network(t)
 	tracker := New(data, config)
 	tracker.Apply("ace", message(t0,

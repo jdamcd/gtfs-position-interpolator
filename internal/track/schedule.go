@@ -8,9 +8,8 @@ import (
 	"github.com/jdamcd/gtfs-position-interpolator/internal/static"
 )
 
-// serviceDay returns the moment that GTFS times on a service date count
-// from: noon minus twelve hours, which is midnight except on days when the
-// clocks change.
+// serviceDay returns the moment GTFS times on a service date count from:
+// noon minus twelve hours, which is midnight unless the clocks change.
 func serviceDay(date string, loc *time.Location) (time.Time, bool) {
 	d, err := time.ParseInLocation("20060102", date, loc)
 	if err != nil {
@@ -19,8 +18,8 @@ func serviceDay(date string, loc *time.Location) (time.Time, bool) {
 	return time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, loc).Add(-12 * time.Hour), true
 }
 
-// nearestServiceDay picks, for a trip update that gives no start date, the
-// service day on which the trip's schedule falls closest to now.
+// nearestServiceDay picks, for a trip update with no start date, the
+// service day that puts the trip's schedule closest to now.
 func nearestServiceDay(first, last int, now time.Time, loc *time.Location) time.Time {
 	var best time.Time
 	bestGap := time.Duration(-1)
@@ -58,8 +57,8 @@ func needsSchedule(tu *gtfs.TripUpdate) bool {
 }
 
 // scheduledTimes returns each call's arrival and departure in seconds from
-// the start of the service day. Calls the schedule gives no time for are
-// spaced evenly between their timed neighbours.
+// the start of the service day, spacing untimed calls evenly between their
+// timed neighbours.
 func scheduledTimes(schedule []static.StopTime) (arrivals, departures []int, ok bool) {
 	arrivals, departures = make([]int, len(schedule)), make([]int, len(schedule))
 	known := -1
@@ -92,13 +91,13 @@ func scheduledTimes(schedule []static.StopTime) (arrivals, departures []int, ok 
 	return arrivals, departures, true
 }
 
-// scheduledVisits works out a trip's visits from its schedule and the
-// delays in its trip update, for an update that cannot be read on its own.
-// A stop with no update of its own takes the delay of the update before it.
-// Stops ahead of the first update take that update's delay.
+// scheduledVisits works out visits from the schedule and the delays in a
+// trip update that cannot be read on its own. A stop with no update takes
+// the delay of the update before it, or of the first update if there is
+// none.
 //
-// It reports false if the update can be read on its own, or does not line
-// up with a trip in the static feed.
+// It reports false if the update can be read on its own, or matches no trip
+// in the static feed.
 func scheduledVisits(tu *gtfs.TripUpdate, data *static.Data, now time.Time) ([]visit, bool) {
 	if data.Location == nil || !needsSchedule(tu) {
 		return nil, false

@@ -60,8 +60,7 @@ func (l Line) At(dist float64) Point {
 	return p
 }
 
-// BearingAt is the direction of travel in compass degrees. It is meaningless
-// for a line of zero length.
+// BearingAt is in compass degrees, and meaningless for a zero-length line.
 func (l Line) BearingAt(dist float64) float64 {
 	_, i := l.locate(dist)
 	lo, hi := i, i+1
@@ -98,9 +97,8 @@ func (l Line) locate(dist float64) (Point, int) {
 	return Point{Lat: a.Lat + t*(b.Lat-a.Lat), Lon: a.Lon + t*(b.Lon-a.Lon)}, i
 }
 
-// Project finds the point on the line closest to p, considering only the
-// stretch between from and to metres along it. It returns the distance along
-// the line and how far p is from that point.
+// Project finds the point closest to p between from and to metres along the
+// line. It returns the distance along, and how far p is from that point.
 func (l Line) Project(p Point, from, to float64) (dist, away float64) {
 	from = math.Max(from, 0)
 	to = math.Min(to, l.Length())

@@ -39,8 +39,8 @@ type Poller struct {
 	wake   chan struct{}
 }
 
-// reset is called when polling stops, since what the handler last saw will be
-// stale when it restarts.
+// reset is called when polling stops: what the handler last saw will be stale
+// by the restart.
 func NewPoller(client *http.Client, feeds []Feed, interval, idle time.Duration, handle Handler, reset func()) *Poller {
 	return &Poller{
 		client:   client,
@@ -53,8 +53,8 @@ func NewPoller(client *http.Client, feeds []Feed, interval, idle time.Duration, 
 	}
 }
 
-// Demand starts the polling if it had stopped. The channel is closed once
-// every feed has been tried since it started.
+// Demand starts polling if it had stopped. The channel closes once every
+// feed has been tried.
 func (p *Poller) Demand() <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -139,8 +139,7 @@ func (p *Poller) poll(ctx context.Context, f Feed, tried func()) {
 			if ctx.Err() == nil {
 				slog.Warn("feed fetch failed", "feed", f.Name, "err", err)
 			}
-		// A feed that leaves out its header timestamp gives no way to tell
-		// whether it has changed.
+		// Without a header timestamp there is no telling if a feed changed.
 		case msg.GetHeader().GetTimestamp() != last || last == 0:
 			last = msg.GetHeader().GetTimestamp()
 			p.handle(f.Name, msg, time.Now())

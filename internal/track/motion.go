@@ -1,14 +1,12 @@
 package track
 
-// The fastest a vehicle is drawn moving, in metres per second.
+// In metres per second.
 const maxSpeed = 36.0
 
-// advance moves a train along its segment. It starts at distance metres with
-// the given speed and should reach length after remaining seconds, standing
-// still. The speed changes linearly to a cruising speed over ramp seconds,
-// holds, then falls linearly to zero over the last ramp seconds. A train
-// whose arrival is closer than it could manage at maxSpeed arrives late
-// instead. All distances are in metres and times in seconds.
+// advance moves a train from distance, at speed, to stand at length after
+// remaining seconds. Speed changes linearly to a cruise over ramp seconds,
+// holds, then falls to zero over the last ramp. A train due sooner than it
+// could manage arrives late. Distances are in metres and times in seconds.
 func advance(distance, speed, length, remaining, ramp, elapsed float64) (float64, float64) {
 	togo := length - distance
 	if togo <= 0 {

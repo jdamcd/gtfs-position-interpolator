@@ -80,9 +80,8 @@ function canvas(width, height) {
   return context;
 }
 
-// The label is drawn into the marker so that overlapping markers hide each
-// other's labels. As separate map text, every label would sit on top of
-// every marker.
+// The label is drawn into the marker so overlapping markers hide each
+// other's labels. As map text, every label would sit on top of every marker.
 function markerImage(color, textColor, label, selected) {
   const measure = canvas(1, 1);
   measure.font = LABEL_FONT;

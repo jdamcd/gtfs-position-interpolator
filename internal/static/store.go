@@ -14,8 +14,8 @@ import (
 	"github.com/jdamcd/gtfs-position-interpolator/internal/fetch"
 )
 
-// Store downloads the static feed and keeps a copy on disk, so a restart
-// without network access can still start from the last feed it saw.
+// Store keeps a copy of the static feed on disk, so a restart without
+// network access starts from the last feed seen.
 type Store struct {
 	URL    string
 	Dir    string
@@ -25,8 +25,8 @@ type Store struct {
 	loaded bool
 }
 
-// The copy on disk is named for its URL, so that a server started with a
-// different feed never falls back to this one.
+// Named for the URL, so a server started with a different feed never falls
+// back to this copy.
 func (s *Store) zipPath() string {
 	sum := sha256.Sum256([]byte(s.URL))
 	return filepath.Join(s.Dir, fmt.Sprintf("static-%x.zip", sum[:6]))
@@ -35,8 +35,7 @@ func (s *Store) zipPath() string {
 func (s *Store) etagPath() string { return s.zipPath() + ".etag" }
 
 // Fetch returns the feed if it is new since the last call. The first call
-// always returns a feed, falling back to the copy on disk if the download
-// fails.
+// always returns one, falling back to the copy on disk.
 func (s *Store) Fetch(ctx context.Context) (*Data, error) {
 	if !s.loaded {
 		if etag, err := os.ReadFile(s.etagPath()); err == nil {

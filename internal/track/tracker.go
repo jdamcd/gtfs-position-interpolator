@@ -13,26 +13,26 @@ import (
 )
 
 const (
-	// The lettered lines list trains that have not started their trip as
-	// in transit, stamped with their future departure time.
+	// Some feeds list trains yet to start as in transit, stamped with their
+	// future departure time.
 	notStartedTolerance = 30 * time.Second
 
-	// Used to time a hop when the schedule has no run time for it.
+	// Times a hop the schedule has no run time for.
 	fallbackSpeed = 10.0
 )
 
 type Config struct {
-	// MaxAge is how old a vehicle's upstream timestamp can be before the
-	// train is dropped from the feed.
+	// MaxAge is how old a vehicle's upstream timestamp gets before the train
+	// is dropped.
 	MaxAge time.Duration
 	// Ramp is how long a train takes to reach cruising speed out of a stop,
 	// and to brake into the next.
 	Ramp time.Duration
 }
 
-// A leg is a train's run along a stretch of track to a stop. The anchor is
-// the last moment its place and speed on the line were pinned down; from
-// there it runs to the end of the line, due at the predicted arrival time.
+// A leg is a train's run along a line to a stop. The anchor is when its
+// place and speed were last pinned down; from there it runs to the end of
+// the line, due at eta.
 type leg struct {
 	to          string
 	line        geo.Line
@@ -60,9 +60,8 @@ type train struct {
 type snapshot struct {
 	header time.Time
 	trains map[string]*train
-	// usesVehicles is set once a feed has carried vehicle entities. Those
-	// say which trips are running and where, so trip updates without one
-	// are trips yet to start.
+	// usesVehicles is set once a feed has carried vehicle entities, after
+	// which a trip update without one is a trip yet to start.
 	usesVehicles bool
 }
 
@@ -84,8 +83,8 @@ func (t *Tracker) SetStatic(data *static.Data) {
 	t.static = data
 }
 
-// Reset forgets every train, so that snapshots after a gap in polling are
-// read afresh.
+// Reset forgets every train, so snapshots after a gap in polling are read
+// afresh.
 func (t *Tracker) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -223,9 +222,9 @@ func (t *Tracker) trainFromUpdate(tu *gtfs.TripUpdate, prev *train, header, now 
 	}
 }
 
-// nextLeg works out how to draw a train getting from wherever it is drawn
-// now to where the feed says it is or is heading. On the hop into that stop
-// it changes speed rather than jumping; on any other hop it is moved.
+// nextLeg takes a train from where it is drawn now to where the feed says
+// it is or is heading. On the hop into that stop it changes speed rather
+// than jumping; on any other hop it is moved.
 func (t *Tracker) nextLeg(prev *train, obs observation, route string, now time.Time) *leg {
 	standing := obs.at != ""
 	target, eta := obs.to, obs.eta
@@ -285,8 +284,8 @@ func (t *Tracker) nextLeg(prev *train, obs observation, route string, now time.T
 	return &leg{to: target, line: hop.Line, eta: eta, ramp: t.config.Ramp, anchorAt: now, anchorSpeed: speed}
 }
 
-// estimateLeg times a hop for a train whose departure was never seen, by
-// assuming it will take the scheduled run time to reach the next stop.
+// estimateLeg times a hop for a train never seen departing, assuming the
+// scheduled run time to the next stop.
 func (t *Tracker) estimateLeg(obs observation, route string) *leg {
 	from := obs.from
 	if from == "" {
