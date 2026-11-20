@@ -1,7 +1,22 @@
 package track
 
+import "math"
+
 // In metres per second.
 const maxSpeed = 36.0
+
+// soonest is the least time a train at speed takes to stop togo metres on,
+// cruising no faster than maxSpeed and braking no harder than maxSpeed/ramp.
+func soonest(togo, speed, ramp float64) float64 {
+	if ramp > 0 {
+		// With no cruise, speed peaks halfway at braking*t/2 = 2*togo/t - speed/2.
+		braking := maxSpeed / ramp
+		if t := (math.Sqrt(speed*speed+16*braking*togo) - speed) / (2 * braking); t <= 2*ramp {
+			return t
+		}
+	}
+	return ramp + (togo-speed*ramp/2)/maxSpeed
+}
 
 // advance moves a train from distance, at speed, to stand at length after
 // remaining seconds. Speed changes linearly to a cruise over ramp seconds,
@@ -15,7 +30,7 @@ func advance(distance, speed, length, remaining, ramp, elapsed float64) (float64
 	if elapsed <= 0 {
 		return distance, speed
 	}
-	remaining = max(remaining, togo/maxSpeed+ramp)
+	remaining = max(remaining, soonest(togo, speed, ramp))
 	ramp = min(ramp, remaining/2)
 	cruise := (togo - speed*ramp/2) / (remaining - ramp)
 

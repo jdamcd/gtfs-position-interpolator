@@ -31,10 +31,18 @@ type observation struct {
 //   - others keep reporting STOPPED_AT the previous stop while the train
 //     moves, dropping that stop from the trip update once it has left.
 //
+// Stops listed before the one the vehicle entity names have been passed.
+//
 // Stops missing from the static feed are skipped.
 func observe(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, known func(stop string) bool) (observation, bool) {
 	updates := tu.GetStopTimeUpdate()
 	stop := v.GetStopId()
+	for i, u := range updates {
+		if u.GetStopId() == stop {
+			updates = updates[i:]
+			break
+		}
+	}
 	stopped := v.GetCurrentStatus() == gtfs.VehiclePosition_STOPPED_AT
 	listedFirst := len(updates) == 0 || updates[0].GetStopId() == stop
 
