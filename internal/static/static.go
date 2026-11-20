@@ -26,6 +26,8 @@ const (
 	// side of it.
 	maxStopOffset = 300.0
 	maxChainHops  = 10
+	// Track straying further than this beyond its end stops has doubled back.
+	maxOvershoot = 30.0
 )
 
 // Segment is the track between two stops that some train runs nonstop.
@@ -359,8 +361,12 @@ func Parse(zipped []byte) (*Data, error) {
 			if aways[i-1] > maxStopOffset || aways[i] > maxStopOffset || dists[i] <= dists[i-1] {
 				continue
 			}
+			line := shape.Slice(dists[i-1], dists[i])
+			if overshoots(line, stops[ids[i-1]], stops[ids[i]]) {
+				continue
+			}
 			if !b.hasLine || away < b.away {
-				b.line, b.away, b.hasLine = shape.Slice(dists[i-1], dists[i]), away, true
+				b.line, b.away, b.hasLine = line, away, true
 			}
 		}
 	}
@@ -451,6 +457,18 @@ func projectStops(shape geo.Line, ids []string, stops map[string]geo.Point) (dis
 		last, placed = p, true
 	}
 	return dists, aways
+}
+
+// overshoots reports whether a line between two stops strays further from
+// either than they are apart.
+func overshoots(line geo.Line, from, to geo.Point) bool {
+	limit := geo.Distance(from, to) + maxOvershoot
+	for _, p := range line.Points() {
+		if geo.Distance(p, from) > limit || geo.Distance(p, to) > limit {
+			return true
+		}
+	}
+	return false
 }
 
 func median(seconds []int) time.Duration {
