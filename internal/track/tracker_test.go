@@ -2,6 +2,7 @@ package track
 
 import (
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -155,6 +156,52 @@ func TestVehicleAheadOfItsTripUpdateIsAtTheStopItNames(t *testing.T) {
 	), t0)
 
 	checkPlaced(t, only(t, tracker.Feed(t0)), data, "103N", 0, stopped, "103N")
+}
+
+// arriveEarly runs trains into 103N, each arriving early before its ETA.
+func arriveEarly(tracker *Tracker, feed string, early time.Duration, trains int) time.Time {
+	now := t0
+	for i := range trains {
+		id := "E" + strconv.Itoa(i)
+		due := now.Add(time.Minute)
+		tracker.Apply(feed, message(now,
+			vehicle("1", id, "103N", inTransit, now),
+			tripUpdate("1", id, call{"103N", due}, call{"104N", due.Add(2 * time.Minute)}),
+		), now)
+		now = due.Add(-early)
+		tracker.Apply(feed, message(now,
+			vehicle("1", id, "103N", stopped, now),
+			tripUpdate("1", id, call{"103N", now.Add(30 * time.Second)}, call{"104N", now.Add(150 * time.Second)}),
+		), now)
+		now = now.Add(time.Minute)
+	}
+	return now
+}
+
+func TestETAsAreBroughtForwardByHowLateTheFeedRuns(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	now := arriveEarly(tracker, "1234567", 30*time.Second, 60)
+	tracker.Reset()
+	tracker.Apply("1234567", message(now,
+		vehicle("1", "L1", "103N", inTransit, now),
+		tripUpdate("1", "L1", call{"103N", now.Add(90 * time.Second)}, call{"104N", now.Add(210 * time.Second)}),
+	), now)
+
+	// Taken at its word, the feed has the train 750m along after a minute.
+	checkPlaced(t, only(t, tracker.Feed(now.Add(time.Minute))), data, "102N", 1000, inTransit, "103N")
+}
+
+func TestETAOfATrainStillReportedAtTheStopBehindIsTakenAtItsWord(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	now := arriveEarly(tracker, "ace", 30*time.Second, 60)
+	tracker.Apply("ace", message(now,
+		vehicle("1", "L1", "102N", stopped, now.Add(-time.Minute)),
+		tripUpdate("1", "L1", call{"103N", now.Add(time.Minute)}),
+	), now)
+
+	checkPlaced(t, only(t, tracker.Feed(now)), data, "102N", 500, inTransit, "103N")
 }
 
 func TestUnknownStopsArePassedThrough(t *testing.T) {
