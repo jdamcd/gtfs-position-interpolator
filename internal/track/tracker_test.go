@@ -327,6 +327,37 @@ func TestBearingFollowsTheTrack(t *testing.T) {
 	}
 }
 
+func TestTrainStandingAtAStopFacesTheWayItArrived(t *testing.T) {
+	files := statictest.Network()
+	files["trips.txt"] += "1,R1,Weekday,S3\n"
+	files["shapes.txt"] += "S3,0,40.717986,-73.990000\nS3,1,40.708993,-73.990000\n"
+	files["stop_times.txt"] += "R1,103N,10:00:00,10:00:00,1\nR1,102N,10:02:00,10:02:00,2\n"
+	data, err := static.Parse(statictest.Zip(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reported standing before and after the leg runs out.
+	for _, reported := range []time.Duration{100 * time.Second, 130 * time.Second} {
+		tracker := New(data, config)
+		tracker.Apply("1234567", message(t0, vehicle("1", "R1", "103N", stopped, t0)), t0)
+		tracker.Apply("1234567", message(t0,
+			vehicle("1", "R1", "102N", inTransit, t0),
+			tripUpdate("1", "R1", call{"102N", t0.Add(120 * time.Second)}),
+		), t0)
+		at := t0.Add(reported)
+		tracker.Apply("1234567", message(at, vehicle("1", "R1", "102N", stopped, at)), at)
+		later := at.Add(30 * time.Second)
+		tracker.Apply("1234567", message(later, vehicle("1", "R1", "102N", stopped, later)), later)
+
+		v := only(t, tracker.Feed(later))
+		checkPlaced(t, v, data, "102N", 0, stopped, "102N")
+		if v.Position.GetBearing() != 180 {
+			t.Errorf("reported at %s: bearing %v, want 180 (due south)", reported, v.Position.GetBearing())
+		}
+	}
+}
+
 func TestSlippingArrivalNeverMovesTheTrainBackwards(t *testing.T) {
 	data := network(t)
 	tracker := New(data, config)

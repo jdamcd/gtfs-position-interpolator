@@ -60,7 +60,7 @@ type train struct {
 	vehicle   *gtfs.VehicleDescriptor
 	timestamp time.Time
 	obs       observation
-	// leg is nil when the train is drawn standing at a stop.
+	// leg is nil when the train is drawn at a stop it wasn't seen reaching.
 	leg *leg
 }
 
@@ -277,7 +277,7 @@ func (t *Tracker) nextLeg(prev *train, obs observation, route string, now time.T
 
 	if target == origin {
 		switch {
-		case prev.leg == nil, standing && !unfinished:
+		case prev.leg == nil:
 			return nil
 		case standing && prev.obs.at == target:
 			return prev.leg
@@ -354,7 +354,11 @@ func (tr *train) place(now time.Time, data *static.Data) placement {
 	if stop == "" {
 		status, stop = gtfs.VehiclePosition_IN_TRANSIT_TO, tr.obs.to
 	}
+	// Trains reach some stops from either direction, so this is a fallback.
 	bearing, hasBearing := data.Bearing(stop)
+	if l := tr.leg; l != nil && l.line.Length() > 0 {
+		bearing, hasBearing = l.line.BearingAt(l.line.Length()), true
+	}
 	return placement{data.Stops[stop], bearing, hasBearing, status, stop}
 }
 
