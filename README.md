@@ -7,7 +7,7 @@ A tiny server to generate missing GTFS-RT VehiclePosition feeds on demand. It in
 ![How the server turns static GTFS and trip updates into a positions feed](docs/overview.svg)
 
 - **Track:** Each trip's shape is cut into segments between consecutive stops. If there are no shapes, segments will be straight lines.
-- **Position:** A vehicle is between the last stop time in the past and the next stop time, timed to arrive at the prediction.
+- **Position:** A vehicle is between the last stop time in the past and the next stop time, timed to arrive at the prediction. Where a feed's predictions run later than the arrivals it goes on to report, they are brought forward by that much.
 - **Motion:** A vehicle accelerates for 15 seconds, cruises, and brakes for 15 seconds. When a prediction changes it speeds up or slows down rather than jumping.
 - **Vehicles:** Vehicles that haven't started their trip or provided an update in 10 minutes are excluded.
 - **Delays:** Feeds that give delays rather than times are resolved against the static schedule.

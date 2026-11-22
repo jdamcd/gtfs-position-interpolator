@@ -67,7 +67,7 @@ func TestAdvanceIsSmoothFromAnyStart(t *testing.T) {
 				reached = true
 				// A train too close to brake over the full ramp stops early.
 				canBrake := s.speed*ramp/2 <= s.length-s.distance
-				if canBrake && s.remaining > s.length/maxSpeed+ramp && math.Abs(elapsed-s.remaining) > tick {
+				if canBrake && s.remaining > soonest(s.length-s.distance, s.speed, ramp) && math.Abs(elapsed-s.remaining) > tick {
 					t.Errorf("%s: arrived after %.1f s, want %.1f s", s.name, elapsed, s.remaining)
 				}
 			}
@@ -77,4 +77,36 @@ func TestAdvanceIsSmoothFromAnyStart(t *testing.T) {
 			t.Errorf("%s: never arrived", s.name)
 		}
 	}
+}
+
+func TestRemakingThePlanOfAMovingTrainKeepsItsArrival(t *testing.T) {
+	const length, due, ramp, tick = 700.0, 75.0, 15.0, 0.1
+	distance, speed, since := 0.0, 0.0, 0.0
+	for now := tick; now < 200; now += tick {
+		d, v := advance(distance, speed, length, due-since, ramp, now-since)
+		if d >= length {
+			if math.Abs(now-due) > 2*tick {
+				t.Errorf("arrived after %.1f s, want %.1f s", now, due)
+			}
+			return
+		}
+		if now-since >= 5 {
+			distance, speed, since = d, v, now
+		}
+	}
+	t.Error("never arrived")
+}
+
+func TestOverdueTrainAlreadyMovingRunsStraightIn(t *testing.T) {
+	// From a standing start 150m takes 150/36 + 15 = 19.2 s.
+	const tick = 0.1
+	for elapsed := tick; elapsed < 60; elapsed += tick {
+		if distance, _ := advance(650, 15, 800, 0, 15, elapsed); distance >= 800 {
+			if elapsed > 14 {
+				t.Errorf("arrived after %.1f s, want under 14 s", elapsed)
+			}
+			return
+		}
+	}
+	t.Error("never arrived")
 }

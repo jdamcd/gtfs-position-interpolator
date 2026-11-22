@@ -185,3 +185,24 @@ func TestLocation(t *testing.T) {
 		t.Errorf("location %v from a padded value, want America/Chicago", got)
 	}
 }
+
+func TestShapeThatDoublesBackPastAStopIsNotFollowed(t *testing.T) {
+	// S1 passes 20m east of 102N, runs 220m beyond it and comes back
+	// through it before carrying on north.
+	files := statictest.Network()
+	files["shapes.txt"] = "shape_id,shape_pt_sequence,shape_pt_lat,shape_pt_lon\n" +
+		"S1,0,40.700000,-73.990000\n" +
+		"S1,1,40.708993,-73.989763\n" +
+		"S1,2,40.710972,-73.989763\n" +
+		"S1,3,40.708993,-73.990000\n" +
+		"S1,4,40.717986,-73.990000\n" +
+		"S1,5,40.726980,-73.990000\n" +
+		"S2,0,40.708993,-73.990000\n" +
+		"S2,1,40.700000,-73.990000\n"
+	data, err := Parse(statictest.Zip(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkSegment(t, data.Segment("101N", "102N"), 1000, 120*time.Second)
+	checkSegment(t, data.Segment("102N", "103N"), 1000, 120*time.Second)
+}

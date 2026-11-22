@@ -19,6 +19,13 @@ const (
 
 	// Times a hop the schedule has no run time for.
 	fallbackSpeed = 10.0
+
+	// Each arrival moves a feed's padding this fraction of the way to what
+	// it showed.
+	paddingWeight = 0.1
+	// A train held between stops arrives minutes off its ETA, which says
+	// nothing about the feed's usual padding.
+	maxPadding = 2 * time.Minute
 )
 
 type Config struct {
@@ -70,10 +77,12 @@ type Tracker struct {
 	mu     sync.RWMutex
 	static *static.Data
 	feeds  map[string]snapshot
+	// padding is how far each feed's ETAs run behind the arrivals it reports.
+	padding map[string]time.Duration
 }
 
 func New(data *static.Data, config Config) *Tracker {
-	return &Tracker{config: config, static: data, feeds: map[string]snapshot{}}
+	return &Tracker{config: config, static: data, feeds: map[string]snapshot{}, padding: map[string]time.Duration{}}
 }
 
 // Trains finish the leg they are on along the track they started it with.
@@ -84,7 +93,7 @@ func (t *Tracker) SetStatic(data *static.Data) {
 }
 
 // Reset forgets every train, so snapshots after a gap in polling are read
-// afresh.
+// afresh. Padding is kept.
 func (t *Tracker) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -131,7 +140,7 @@ func (t *Tracker) Apply(feed string, msg *gtfs.FeedMessage, now time.Time) {
 	if next.usesVehicles {
 		for _, v := range vehicles {
 			key := tripKey(v.GetTrip())
-			if tr := t.trainFromVehicle(v, updates[key], last.trains[key], header, now); tr != nil {
+			if tr := t.trainFromVehicle(feed, v, updates[key], last.trains[key], header, now); tr != nil {
 				next.trains[key] = tr
 			}
 		}
@@ -158,7 +167,7 @@ func (t *Tracker) withRoute(trip *gtfs.TripDescriptor) *gtfs.TripDescriptor {
 	return trip
 }
 
-func (t *Tracker) trainFromVehicle(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, prev *train, header, now time.Time) *train {
+func (t *Tracker) trainFromVehicle(feed string, v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, prev *train, header, now time.Time) *train {
 	timestamp := time.Unix(int64(v.GetTimestamp()), 0)
 	if timestamp.After(header.Add(notStartedTolerance)) {
 		return nil
@@ -177,8 +186,24 @@ func (t *Tracker) trainFromVehicle(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate,
 		vehicle:   vehicle,
 		timestamp: timestamp,
 		obs:       obs,
-		leg:       t.nextLeg(prev, obs, trip.GetRouteId(), now),
+		leg:       t.nextLeg(prev, t.unpad(feed, obs, prev, timestamp), trip.GetRouteId(), now),
 	}
+}
+
+// unpad brings an ETA forward by the feed's padding, learning it from each
+// train first reported at the stop it was due at.
+//
+// ETAs given with the stop behind are left alone: they slide with the clock,
+// and bringing them forward sends the train off at full speed.
+func (t *Tracker) unpad(feed string, obs observation, prev *train, timestamp time.Time) observation {
+	if prev != nil && prev.obs.from == "" && prev.obs.to == obs.at && obs.at != "" && !prev.obs.eta.IsZero() && timestamp.After(prev.timestamp) {
+		seen := min(max(prev.obs.eta.Sub(timestamp), -maxPadding), maxPadding)
+		t.padding[feed] += time.Duration(float64(seen-t.padding[feed]) * paddingWeight)
+	}
+	if obs.from == "" && !obs.eta.IsZero() {
+		obs.eta = obs.eta.Add(-t.padding[feed])
+	}
+	return obs
 }
 
 func (t *Tracker) trainFromUpdate(tu *gtfs.TripUpdate, prev *train, header, now time.Time) *train {
