@@ -1,4 +1,5 @@
 :root {
+  --map: #f7f7f7;
   --bg: #ffffff;
   --fg: #1a1d21;
   --muted: #646b73;
@@ -9,6 +10,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --map: #292929;
     --bg: #1c1f24;
     --fg: #e8eaed;
     --muted: #9aa1a9;
@@ -20,6 +22,7 @@
 html, body, #map {
   height: 100%;
   margin: 0;
+  background: var(--map);
 }
 
 #panel {
