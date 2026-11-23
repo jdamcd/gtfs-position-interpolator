@@ -19,6 +19,35 @@ function segmentKey(a, b) {
   return `${p}|${q}`;
 }
 
+// Joins stations that shapes stop short of. The cap is the server's
+// maxStopOffset.
+const JOIN_METRES = 20;
+const MAX_JOIN_METRES = 300;
+
+function metresFrom([lon0, lat0], [lon, lat]) {
+  const perDegree = 111_195;
+  return [(lon - lon0) * perDegree * Math.cos((lat0 * Math.PI) / 180), (lat - lat0) * perDegree];
+}
+
+function nearestOnTracks(tracks, at) {
+  let best = null;
+  for (const track of tracks) {
+    for (let i = 1; i < track.line.length; i++) {
+      const [p, q] = [track.line[i - 1], track.line[i]];
+      const [ax, ay] = metresFrom(at, p);
+      const [bx, by] = metresFrom(at, q);
+      const [dx, dy] = [bx - ax, by - ay];
+      const length = dx * dx + dy * dy;
+      const t = length ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / length)) : 0;
+      const distance = Math.hypot(ax + t * dx, ay + t * dy);
+      if (!best || distance < best.distance) {
+        best = { distance, track, point: [round(p[0] + t * (q[0] - p[0])), round(p[1] + t * (q[1] - p[1]))] };
+      }
+    }
+  }
+  return best;
+}
+
 export async function buildNetwork(zipUrlOrPath) {
   const files = unzipSync(await load(zipUrlOrPath), { filter: (file) => TABLES.includes(file.name) });
 
@@ -101,6 +130,15 @@ export async function buildNetwork(zipUrlOrPath) {
     bounds[1] = [Math.max(bounds[1][0], lon), Math.max(bounds[1][1], lat)];
   }
   if (bounds[0][0] === Infinity) throw new Error("stops.txt has no stops with coordinates");
+
+  const joins = [];
+  for (const { at } of stations) {
+    const nearest = nearestOnTracks(tracks, at);
+    if (nearest && nearest.distance > JOIN_METRES && nearest.distance <= MAX_JOIN_METRES) {
+      joins.push({ label: nearest.track.label, line: [nearest.point, at] });
+    }
+  }
+  tracks.push(...joins);
 
   return { bounds, routes, stops, stations, tracks: tracks.map(({ label, line }) => ({ routes: JSON.parse(label), line })) };
 }
