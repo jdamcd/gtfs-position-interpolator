@@ -99,7 +99,7 @@ export async function buildNetwork(zipUrlOrPath) {
     let run = null;
     for (let i = 1; i < points.length; i++) {
       const key = segmentKey(points[i - 1], points[i]);
-      if (drawn.has(key) || segmentKey(points[i - 1], points[i - 1]) === key) {
+      if (drawn.has(key) || points[i - 1].join() === points[i].join()) {
         run = null;
         continue;
       }

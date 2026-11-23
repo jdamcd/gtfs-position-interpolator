@@ -1,7 +1,8 @@
 package track
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"sync"
 	"time"
 
@@ -397,7 +398,7 @@ func (t *Tracker) Feed(now time.Time) *gtfs.FeedMessage {
 			})
 		}
 	}
-	sort.Slice(entities, func(i, j int) bool { return entities[i].GetId() < entities[j].GetId() })
+	slices.SortFunc(entities, func(a, b *gtfs.FeedEntity) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	return &gtfs.FeedMessage{
 		Header: &gtfs.FeedHeader{
 			GtfsRealtimeVersion: proto.String("2.0"),

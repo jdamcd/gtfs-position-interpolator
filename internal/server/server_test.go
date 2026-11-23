@@ -137,6 +137,23 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestHealthzAgesFeedsByTheHandlerClock(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	now := start
+	tracker := newTracker(t)
+	h := newHandler(tracker, polling(), []string{"a"}, 0, func() time.Time { return now })
+	tracker.Apply("a", snapshot(start), start)
+
+	now = start.Add(staleAfter - time.Second)
+	if rec := get(t, h, "/healthz"); rec.Code != http.StatusOK {
+		t.Errorf("status %d a second short of stale, want 200", rec.Code)
+	}
+	now = start.Add(staleAfter)
+	if rec := get(t, h, "/healthz"); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status %d once stale, want 503", rec.Code)
+	}
+}
+
 func TestHealthzIsHealthyWhileNothingIsPolled(t *testing.T) {
 	idle := &poller{ready: make(chan struct{})}
 	h := New(newTracker(t), idle, []string{"a", "b"}, 0)

@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,9 +220,41 @@ func Parse(zipped []byte) (*Data, error) {
 	if err != nil {
 		return nil, err
 	}
+	stops, err := readStops(zr)
+	if err != nil {
+		return nil, err
+	}
+	location, err := readLocation(zr)
+	if err != nil {
+		return nil, err
+	}
+	trips, err := readTrips(zr)
+	if err != nil {
+		return nil, err
+	}
+	shapes, err := readShapes(zr)
+	if err != nil {
+		return nil, err
+	}
+	stopIDs, schedules, err := readStopTimes(zr)
+	if err != nil {
+		return nil, err
+	}
+	d := &Data{
+		Stops:     stops,
+		Location:  location,
+		stopIDs:   stopIDs,
+		schedules: schedules,
+		trips:     trips,
+		derived:   map[hop]*Segment{},
+	}
+	d.indexHops(d.collectHops(shapes))
+	return d, nil
+}
 
+func readStops(zr *zip.Reader) (map[string]geo.Point, error) {
 	stops := map[string]geo.Point{}
-	err = readTable(zr, "stops.txt", []string{"stop_id", "stop_lat", "stop_lon"}, func(row []string) error {
+	err := readTable(zr, "stops.txt", []string{"stop_id", "stop_lat", "stop_lon"}, func(row []string) error {
 		// Entrances and other places inside a station may have no position.
 		if strings.TrimSpace(row[1]) == "" && strings.TrimSpace(row[2]) == "" {
 			return nil
@@ -232,14 +263,14 @@ func Parse(zipped []byte) (*Data, error) {
 		stops[row[0]] = p
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
+	return stops, err
+}
 
-	// Only trip updates giving delays need the timezone, so a feed without a
-	// readable one still loads.
+// Only trip updates giving delays need the timezone, so a feed without a
+// readable one still loads.
+func readLocation(zr *zip.Reader) (*time.Location, error) {
 	var location *time.Location
-	err = readTable(zr, "agency.txt", []string{"agency_timezone?"}, func(row []string) error {
+	err := readTable(zr, "agency.txt", []string{"agency_timezone?"}, func(row []string) error {
 		zone := strings.TrimSpace(row[0])
 		if location != nil || zone == "" {
 			return nil
@@ -255,58 +286,64 @@ func Parse(zipped []byte) (*Data, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	return location, nil
+}
 
+func readTrips(zr *zip.Reader) (map[string]trip, error) {
 	trips := map[string]trip{}
-	err = readTable(zr, "trips.txt", []string{"trip_id", "route_id", "shape_id?"}, func(row []string) error {
+	err := readTable(zr, "trips.txt", []string{"trip_id", "route_id", "shape_id?"}, func(row []string) error {
 		trips[row[0]] = trip{route: row[1], shape: row[2]}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
+	return trips, err
+}
 
+func readShapes(zr *zip.Reader) (map[string]geo.Line, error) {
 	type shapePoint struct {
 		sequence int
 		point    geo.Point
 	}
-	shapePoints := map[string][]shapePoint{}
-	err = readTable(zr, "shapes.txt", []string{"shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"}, func(row []string) error {
+	points := map[string][]shapePoint{}
+	err := readTable(zr, "shapes.txt", []string{"shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"}, func(row []string) error {
 		seq, err := strconv.Atoi(row[1])
 		if err != nil {
 			return err
 		}
 		p, err := parsePoint(row[2], row[3])
-		shapePoints[row[0]] = append(shapePoints[row[0]], shapePoint{seq, p})
+		points[row[0]] = append(points[row[0]], shapePoint{seq, p})
 		return err
 	})
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	shapes := map[string]geo.Line{}
-	for id, sp := range shapePoints {
-		sort.Slice(sp, func(i, j int) bool { return sp[i].sequence < sp[j].sequence })
-		points := make([]geo.Point, len(sp))
+	for id, sp := range points {
+		slices.SortFunc(sp, func(a, b shapePoint) int { return cmp.Compare(a.sequence, b.sequence) })
+		line := make([]geo.Point, len(sp))
 		for i := range sp {
-			points[i] = sp[i].point
+			line[i] = sp[i].point
 		}
-		shapes[id] = geo.NewLine(points)
+		shapes[id] = geo.NewLine(line)
 	}
+	return shapes, nil
+}
 
-	var stopIDs []string
-	stopIndex := map[string]uint32{}
-	stopTimes := map[string][]stopTime{}
+// readStopTimes returns each trip's calls in stop sequence order.
+func readStopTimes(zr *zip.Reader) (stopIDs []string, schedules map[string][]stopTime, err error) {
+	index := map[string]uint32{}
+	schedules = map[string][]stopTime{}
 	err = readTable(zr, "stop_times.txt", []string{"trip_id", "stop_id", "arrival_time?", "departure_time?", "stop_sequence"}, func(row []string) error {
 		seq, err := strconv.ParseUint(row[4], 10, 32)
 		if err != nil {
 			return err
 		}
-		stop, ok := stopIndex[row[1]]
+		stop, ok := index[row[1]]
 		if !ok {
 			stop = uint32(len(stopIDs))
-			stopIndex[row[1]] = stop
+			index[row[1]] = stop
 			stopIDs = append(stopIDs, row[1])
 		}
-		stopTimes[row[0]] = append(stopTimes[row[0]], stopTime{
+		schedules[row[0]] = append(schedules[row[0]], stopTime{
 			sequence:  uint32(seq),
 			stop:      stop,
 			arrival:   int32(parseClock(row[2])),
@@ -315,25 +352,28 @@ func Parse(zipped []byte) (*Data, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	tripIDs := make([]string, 0, len(stopTimes))
-	for id := range stopTimes {
-		tripIDs = append(tripIDs, id)
+	for id, times := range schedules {
+		// Cloning drops the spare capacity append leaves.
+		times = slices.Clone(times)
+		slices.SortFunc(times, func(a, b stopTime) int { return cmp.Compare(a.sequence, b.sequence) })
+		schedules[id] = times
 	}
-	sort.Strings(tripIDs)
+	return stopIDs, schedules, nil
+}
 
+// collectHops gathers routes, run times and track for each pair of stops a
+// trip calls at in turn.
+func (d *Data) collectHops(shapes map[string]geo.Line) map[hop]*hopBuild {
 	hops := map[hop]*hopBuild{}
 	patterns := map[string]bool{}
-	for _, id := range tripIDs {
-		times := slices.Clone(stopTimes[id])
-		sort.Slice(times, func(i, j int) bool { return times[i].sequence < times[j].sequence })
-		stopTimes[id] = times
-		t := trips[id]
+	for _, id := range slices.Sorted(maps.Keys(d.schedules)) {
+		times := d.schedules[id]
+		t := d.trips[id]
 		ids := make([]string, len(times))
 		for i, st := range times {
-			ids[i] = stopIDs[st.stop]
+			ids[i] = d.stopIDs[st.stop]
 			if i == 0 {
 				continue
 			}
@@ -349,47 +389,44 @@ func Parse(zipped []byte) (*Data, error) {
 			}
 		}
 		pattern := t.shape + "|" + strings.Join(ids, ",")
-		shape, ok := shapes[t.shape]
-		if patterns[pattern] || !ok {
+		if shape, ok := shapes[t.shape]; ok && !patterns[pattern] {
+			patterns[pattern] = true
+			fitShape(hops, shape, ids, d.Stops)
+		}
+	}
+	return hops
+}
+
+// Each hop keeps whichever stretch of shape passes closest to its stops.
+func fitShape(hops map[hop]*hopBuild, shape geo.Line, ids []string, stops map[string]geo.Point) {
+	dists, aways := projectStops(shape, ids, stops)
+	for i := 1; i < len(ids); i++ {
+		if aways[i-1] > maxStopOffset || aways[i] > maxStopOffset || dists[i] <= dists[i-1] {
 			continue
 		}
-		patterns[pattern] = true
-		dists, aways := projectStops(shape, ids, stops)
-		for i := 1; i < len(ids); i++ {
-			away := aways[i-1] + aways[i]
-			b := hops[hop{ids[i-1], ids[i]}]
-			if aways[i-1] > maxStopOffset || aways[i] > maxStopOffset || dists[i] <= dists[i-1] {
-				continue
-			}
-			line := shape.Slice(dists[i-1], dists[i])
-			if overshoots(line, stops[ids[i-1]], stops[ids[i]]) {
-				continue
-			}
-			if !b.hasLine || away < b.away {
-				b.line, b.away, b.hasLine = line, away, true
-			}
+		line := shape.Slice(dists[i-1], dists[i])
+		if overshoots(line, stops[ids[i-1]], stops[ids[i]]) {
+			continue
+		}
+		b := hops[hop{ids[i-1], ids[i]}]
+		if away := aways[i-1] + aways[i]; !b.hasLine || away < b.away {
+			b.line, b.away, b.hasLine = line, away, true
 		}
 	}
+}
 
-	d := &Data{
-		Stops:     stops,
-		Location:  location,
-		stopIDs:   stopIDs,
-		schedules: stopTimes,
-		trips:     trips,
-		segments:  map[hop]*Segment{},
-		bearings:  map[string]float64{},
-		next:      map[string][]string{},
-		previous:  map[string][]origin{},
-		derived:   map[hop]*Segment{},
-	}
-	hopKeys := slices.SortedFunc(maps.Keys(hops), func(a, b hop) int {
+func (d *Data) indexHops(hops map[hop]*hopBuild) {
+	d.segments = map[hop]*Segment{}
+	d.next = map[string][]string{}
+	d.previous = map[string][]origin{}
+	d.bearings = map[string]float64{}
+	keys := slices.SortedFunc(maps.Keys(hops), func(a, b hop) int {
 		return cmp.Or(cmp.Compare(a.from, b.from), cmp.Compare(a.to, b.to))
 	})
-	for _, h := range hopKeys {
+	for _, h := range keys {
 		b := hops[h]
-		a, okA := stops[h.from]
-		z, okZ := stops[h.to]
+		a, okA := d.Stops[h.from]
+		z, okZ := d.Stops[h.to]
 		if !okA || !okZ {
 			continue
 		}
@@ -399,23 +436,22 @@ func Parse(zipped []byte) (*Data, error) {
 		}
 		d.segments[h] = &Segment{Line: line, RunTime: median(b.runTimes)}
 		d.next[h.from] = append(d.next[h.from], h.to)
-		trips := 0
+		total := 0
 		for _, n := range b.routes {
-			trips += n
+			total += n
 		}
-		d.previous[h.to] = append(d.previous[h.to], origin{stop: h.from, trips: trips, routes: b.routes})
+		d.previous[h.to] = append(d.previous[h.to], origin{stop: h.from, trips: total, routes: b.routes})
 	}
 	for _, list := range d.next {
-		sort.Strings(list)
+		slices.Sort(list)
 	}
 	for _, list := range d.previous {
-		sort.Slice(list, func(i, j int) bool {
-			if list[i].trips != list[j].trips {
-				return list[i].trips > list[j].trips
-			}
-			return list[i].stop < list[j].stop
+		slices.SortFunc(list, func(a, b origin) int {
+			return cmp.Or(cmp.Compare(b.trips, a.trips), cmp.Compare(a.stop, b.stop))
 		})
 	}
+	// A stop faces the way trains arrive on its busiest approach, or else the
+	// way they leave.
 	for stop, origins := range d.previous {
 		if line := d.segments[hop{origins[0].stop, stop}].Line; line.Length() > 0 {
 			d.bearings[stop] = line.BearingAt(line.Length())
@@ -429,7 +465,6 @@ func Parse(zipped []byte) (*Data, error) {
 			d.bearings[stop] = line.BearingAt(0)
 		}
 	}
-	return d, nil
 }
 
 // projectStops places each stop on the shape in travel order. Each search
@@ -475,7 +510,7 @@ func median(seconds []int) time.Duration {
 	if len(seconds) == 0 {
 		return 0
 	}
-	sort.Ints(seconds)
+	slices.Sort(seconds)
 	return time.Duration(seconds[len(seconds)/2]) * time.Second
 }
 

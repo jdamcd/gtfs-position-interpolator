@@ -2,7 +2,7 @@ package geo
 
 import (
 	"math"
-	"sort"
+	"slices"
 )
 
 const earthRadius = 6371008.8
@@ -87,8 +87,8 @@ func (l Line) locate(dist float64) (Point, int) {
 	if dist >= l.Length() {
 		return l.points[n-1], n - 2
 	}
-	i := sort.SearchFloat64s(l.cum, dist)
-	if l.cum[i] == dist {
+	i, found := slices.BinarySearch(l.cum, dist)
+	if found {
 		return l.points[i], min(i, n-2)
 	}
 	i--

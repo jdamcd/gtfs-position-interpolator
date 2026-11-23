@@ -94,11 +94,11 @@ func New(tracker *track.Tracker, poller Poller, feeds []string, cache time.Durat
 	return newHandler(tracker, poller, feeds, cache, time.Now)
 }
 
-func newHandler(tracker *track.Tracker, poller Poller, feeds []string, cache time.Duration, now func() time.Time) http.Handler {
+func newHandler(tracker *track.Tracker, poller Poller, feeds []string, cache time.Duration, clock func() time.Time) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /positions", &positions{tracker: tracker, poller: poller, cache: cache, now: now})
+	mux.Handle("GET /positions", &positions{tracker: tracker, poller: poller, cache: cache, now: clock})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		now := time.Now()
+		now := clock()
 		status := tracker.Status()
 		report := map[string]feedHealth{}
 		healthy := true
