@@ -13,8 +13,17 @@
 <aside id="panel">
   <header>
     <h1>Vehicle positions</h1>
+    <button id="about-toggle" class="icon-button" type="button" title="About" aria-label="About" aria-expanded="false" aria-controls="about"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v3.5M8 5v.01"/></svg></button>
     <label class="switch">Smoothing <input id="smooth" type="checkbox" role="switch" checked title="Glide trains between the positions in the feed" autocomplete="off"></label>
   </header>
+  <div id="about" inert>
+    <div>
+      <div class="about-text">
+        <p>This is a demo of a <a href="https://github.com/jdamcd/gtfs-position-interpolator" target="_blank" rel="noopener">tiny server</a> that interpolates missing vehicle positions in <a href="https://gtfs.org/documentation/realtime/reference/" target="_blank" rel="noopener">GTFS-RT</a> feeds, using trip updates and static GTFS schedules. It was made by <a href="https://jdamcd.blog" target="_blank" rel="noopener">Jamie McDonald</a> at the Recurse Center (W1'26).</p>
+        <p>Vehicles are placed along their route between the previous stop and the next, timed to arrive when predicted, and will speed up or slow down when the prediction changes.</p>
+      </div>
+    </div>
+  </div>
   <dl id="stats">
     <dt><label for="routes">Routes</label></dt>
     <dd><input id="routes" type="text" placeholder="all, or a list of IDs" title="Route IDs separated by commas" autocomplete="off" spellcheck="false"></dd>
@@ -31,7 +40,7 @@
   </dl>
   <p id="error" hidden></p>
   <section id="selected" hidden>
-    <h2><span id="sel-badge" class="badge"></span><span id="sel-trip"></span><button id="sel-zoom" type="button" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5"/><path d="M10 10 14 14"/></svg></button></h2>
+    <h2><span id="sel-badge" class="badge"></span><span id="sel-trip"></span><button id="sel-zoom" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5"/><path d="M10 10 14 14"/></svg></button></h2>
     <dl>
       <dt>Entity</dt><dd id="sel-id"></dd>
       <dt>Status</dt><dd id="sel-status"></dd>

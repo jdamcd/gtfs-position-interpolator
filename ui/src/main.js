@@ -471,4 +471,8 @@ async function start() {
   requestAnimationFrame(animate);
 }
 
+$("about-toggle").addEventListener("click", () => {
+  const open = !$("about").toggleAttribute("inert");
+  $("about-toggle").setAttribute("aria-expanded", open);
+});
 start();

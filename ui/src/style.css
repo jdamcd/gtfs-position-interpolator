@@ -84,13 +84,64 @@ h2 {
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 6px;
   margin-bottom: 10px;
+}
+
+.icon-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-button:hover, .icon-button[aria-expanded="true"] {
+  color: var(--fg);
+}
+
+.icon-button svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* Animating the row from 0fr to 1fr slides the text open at its natural height. */
+#about {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease;
+}
+
+#about:not([inert]) {
+  grid-template-rows: 1fr;
+}
+
+#about > div {
+  overflow: hidden;
+}
+
+.about-text {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.about-text p {
+  margin: 0 0 6px;
+}
+
+.about-text a {
+  color: var(--accent);
 }
 
 .switch {
   display: flex;
+  margin-left: auto;
   align-items: center;
   gap: 6px;
   color: var(--muted);
@@ -193,26 +244,6 @@ dd {
 
 #sel-zoom {
   margin-left: auto;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-#sel-zoom svg {
-  display: block;
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-}
-
-#sel-zoom:hover {
-  border-color: var(--muted);
 }
 
 #sel-arrow svg {
