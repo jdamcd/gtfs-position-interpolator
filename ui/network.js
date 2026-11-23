@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "csv-parse/sync";
 import { strFromU8, unzipSync } from "fflate";
+import { metresFrom } from "./src/geo.js";
 
 const TABLES = ["routes.txt", "trips.txt", "shapes.txt", "stops.txt", "stop_times.txt"];
 
@@ -19,15 +20,20 @@ function segmentKey(a, b) {
   return `${p}|${q}`;
 }
 
+// A branch can leave mid-run without changing its routes, so runs are also
+// cut where others end.
+function cutAtEnds(runs) {
+  const ends = new Set(runs.flatMap(({ line }) => [line[0].join(), line.at(-1).join()]));
+  return runs.flatMap(({ label, line }) => {
+    const cuts = line.flatMap((point, i) => (i === 0 || i === line.length - 1 || ends.has(point.join()) ? [i] : []));
+    return cuts.slice(1).map((to, i) => ({ label, line: line.slice(cuts[i], to + 1) }));
+  });
+}
+
 // Joins stations that shapes stop short of. The cap is the server's
 // maxStopOffset.
 const JOIN_METRES = 20;
 const MAX_JOIN_METRES = 300;
-
-function metresFrom([lon0, lat0], [lon, lat]) {
-  const perDegree = 111_195;
-  return [(lon - lon0) * perDegree * Math.cos((lat0 * Math.PI) / 180), (lat - lat0) * perDegree];
-}
 
 function nearestOnTracks(tracks, at) {
   let best = null;
@@ -96,7 +102,7 @@ export async function buildNetwork(zipUrlOrPath) {
 
   // Each stretch of track is drawn once, in either direction, labelled with
   // every route whose shapes run along it.
-  const tracks = [];
+  const runs = [];
   const drawn = new Set();
   for (const points of shapes.values()) {
     let run = null;
@@ -110,11 +116,12 @@ export async function buildNetwork(zipUrlOrPath) {
       const label = JSON.stringify([...segmentRoutes.get(key)].sort());
       if (run?.label !== label) {
         run = { label, line: [points[i - 1]] };
-        tracks.push(run);
+        runs.push(run);
       }
       run.line.push(points[i]);
     }
   }
+  const tracks = cutAtEnds(runs);
 
   const stops = {};
   const parents = {};

@@ -1,6 +1,7 @@
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
+import { layoutTracks, prepareTracks } from "./layout.js";
 import "./style.css";
 
 const { FeedMessage } = GtfsRealtimeBindings.transit_realtime;
@@ -29,6 +30,7 @@ let map = null;
 let routes = {};
 let stops = {};
 let tracks = [];
+let preparedTracks = [];
 let stations = [];
 let framed = Boolean(VIEW.center);
 let moved = false;
@@ -195,17 +197,14 @@ function addLayers() {
 // Track shared by lines of different colours is drawn as parallel lines.
 function drawTracks() {
   const wanted = new Set(selectedRoutes());
-  const features = [];
-  for (const track of tracks) {
-    const colors = [...new Set(track.routes
-      .filter((route) => wanted.size === 0 || wanted.has(route))
-      .map(routeColor))].sort();
-    colors.forEach((color, i) => features.push({
-      type: "Feature",
-      properties: { color: `#${color}`, offset: (i - (colors.length - 1) / 2) * TRACK_WIDTH },
-      geometry: { type: "LineString", coordinates: track.line },
-    }));
-  }
+  const colors = tracks.map((track) => [...new Set(track.routes
+    .filter((route) => wanted.size === 0 || wanted.has(route))
+    .map(routeColor))]);
+  const features = layoutTracks(preparedTracks, colors).map(({ color, offset, line }) => ({
+    type: "Feature",
+    properties: { color: `#${color}`, offset: offset * TRACK_WIDTH },
+    geometry: { type: "LineString", coordinates: line },
+  }));
   map.getSource("tracks").setData({ type: "FeatureCollection", features });
 }
 
@@ -384,6 +383,7 @@ async function loadNetwork() {
     }
     const network = await response.json();
     ({ routes, stops, stations, tracks } = network);
+    preparedTracks = prepareTracks(tracks);
     if (!framed) frame(network.bounds);
     drawTracks();
     drawStations();
