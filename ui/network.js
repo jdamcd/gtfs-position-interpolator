@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { parse } from "csv-parse/sync";
 import { strFromU8, unzipSync } from "fflate";
 
-const TABLES = ["routes.txt", "trips.txt", "shapes.txt", "stops.txt"];
+const TABLES = ["routes.txt", "trips.txt", "shapes.txt", "stops.txt", "stop_times.txt"];
 
 // About a metre, so that routes sharing track share points.
 const round = (value) => Math.round(Number(value) * 1e5) / 1e5;
@@ -65,8 +65,10 @@ export async function buildNetwork(zipUrlOrPath) {
     };
   }
 
+  const tripRoutes = new Map();
   const shapeRoutes = new Map();
   for (const row of table("trips.txt")) {
+    tripRoutes.set(row.trip_id, row.route_id);
     if (!row.shape_id) continue;
     if (!shapeRoutes.has(row.shape_id)) shapeRoutes.set(row.shape_id, new Set());
     shapeRoutes.get(row.shape_id).add(row.route_id);
@@ -115,10 +117,12 @@ export async function buildNetwork(zipUrlOrPath) {
   }
 
   const stops = {};
+  const parents = {};
   const stations = [];
   const bounds = [[Infinity, Infinity], [-Infinity, -Infinity]];
   for (const row of table("stops.txt")) {
     if (row.stop_name) stops[row.stop_id] = row.stop_name;
+    if (row.parent_station) parents[row.stop_id] = row.parent_station;
     const [lat, lon] = [Number(row.stop_lat), Number(row.stop_lon)];
     if (!row.stop_lat || !row.stop_lon || Number.isNaN(lat) || Number.isNaN(lon)) continue;
     // Platforms are left to their parent station, and entrances and the
@@ -130,6 +134,16 @@ export async function buildNetwork(zipUrlOrPath) {
     bounds[1] = [Math.max(bounds[1][0], lon), Math.max(bounds[1][1], lat)];
   }
   if (bounds[0][0] === Infinity) throw new Error("stops.txt has no stops with coordinates");
+
+  const stationRoutes = new Map();
+  for (const row of table("stop_times.txt")) {
+    const route = tripRoutes.get(row.trip_id);
+    if (!route) continue;
+    const station = parents[row.stop_id] || row.stop_id;
+    if (!stationRoutes.has(station)) stationRoutes.set(station, new Set());
+    stationRoutes.get(station).add(route);
+  }
+  for (const station of stations) station.routes = [...(stationRoutes.get(station.id) ?? [])].sort();
 
   const joins = [];
   for (const { at } of stations) {

@@ -33,6 +33,7 @@ let stations = [];
 let framed = Boolean(VIEW.center);
 let moved = false;
 let smooth = $("smooth").checked;
+let routeFilter = $("routes").value;
 let selectedId = null;
 let inFlight = false;
 let setupError = null;
@@ -61,7 +62,7 @@ function stopLabel(id) {
 
 function selectedRoutes() {
   const ids = new Map(Object.keys(routes).map((id) => [id.toLowerCase(), id]));
-  return $("routes").value.split(",").map((r) => r.trim()).filter(Boolean).map((r) => ids.get(r.toLowerCase()) || r);
+  return routeFilter.split(",").map((r) => r.trim()).filter(Boolean).map((r) => ids.get(r.toLowerCase()) || r);
 }
 
 function feedUrl() {
@@ -209,13 +210,16 @@ function drawTracks() {
 }
 
 function drawStations() {
+  const wanted = new Set(selectedRoutes());
   map.getSource("stations").setData({
     type: "FeatureCollection",
-    features: stations.map(({ id, at }) => ({
-      type: "Feature",
-      properties: { label: stopLabel(id) },
-      geometry: { type: "Point", coordinates: at },
-    })),
+    features: stations
+      .filter(({ routes }) => wanted.size === 0 || routes.some((route) => wanted.has(route)))
+      .map(({ id, at }) => ({
+        type: "Feature",
+        properties: { label: stopLabel(id) },
+        geometry: { type: "Point", coordinates: at },
+      })),
   });
 }
 
@@ -256,6 +260,8 @@ async function refresh() {
     const bytes = new Uint8Array(await response.arrayBuffer());
     const elapsed = performance.now() - started;
     const feed = FeedMessage.toObject(FeedMessage.decode(bytes), { enums: String, longs: Number });
+    // The filter changed in flight, so finally fetches again.
+    if (url !== feedUrl()) return;
     render(feed);
     $("stat-url").textContent = `GET ${url}`;
     const age = Date.now() / 1000 - feed.header.timestamp;
@@ -266,6 +272,7 @@ async function refresh() {
     showError(`Request failed: ${err.message}`);
   } finally {
     inFlight = false;
+    if (url !== feedUrl()) refresh();
   }
 }
 
@@ -417,8 +424,10 @@ async function start() {
     stationName.setLngLat(station.geometry.coordinates).setText(station.properties.label).addTo(map);
   });
   map.on("mouseleave", "stations", () => stationName.remove());
-  $("routes").addEventListener("change", () => {
+  $("routes").addEventListener("change", (event) => {
+    routeFilter = event.target.value;
     drawTracks();
+    drawStations();
     refresh();
   });
   $("smooth").addEventListener("change", (event) => {
