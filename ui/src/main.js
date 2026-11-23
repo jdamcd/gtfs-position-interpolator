@@ -1,15 +1,16 @@
-import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
+import { decodeFeed, fetchFeed } from "./feed.js";
 import { cumulative, distance, pointAt } from "./geo.js";
 import { glidePath, indexTracks } from "./glide.js";
 import { layoutTracks, prepareTracks } from "./layout.js";
 import { arrowImage, markerImage } from "./markers.js";
+import { createStationPopup } from "./popup.js";
 import "./style.css";
 
-const { FeedMessage } = GtfsRealtimeBindings.transit_realtime;
 const POSITIONS_URL = import.meta.env.VITE_POSITIONS_URL;
 const ROUTE_LABELS = Object.fromEntries((import.meta.env.VITE_ROUTE_LABELS || "").split(",").filter(Boolean).map((pair) => pair.split(":")));
+const TRIP_UPDATE_URLS = (import.meta.env.VITE_TRIP_UPDATE_URLS || "").split(",").map((url) => url.trim()).filter(Boolean);
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 const POLL_INTERVAL = 2500;
 const NETWORK_INTERVAL = 60 * 60 * 1000;
@@ -58,6 +59,11 @@ function routeTextColor(route) {
 
 function routeLabel(route) {
   return ROUTE_LABELS[route] || routes[route]?.name || route || "?";
+}
+
+function paintBadge(node, route) {
+  node.style.cssText = `--route:#${routeColor(route)};--route-text:#${routeTextColor(route)}`;
+  node.textContent = routeLabel(route);
 }
 
 function stopLabel(id) {
@@ -162,7 +168,7 @@ function drawStations() {
       .filter(({ routes }) => wanted.size === 0 || routes.some((route) => wanted.has(route)))
       .map(({ id, at }) => ({
         type: "Feature",
-        properties: { label: stopLabel(id) },
+        properties: { id },
         geometry: { type: "Point", coordinates: at },
       })),
   });
@@ -200,11 +206,9 @@ async function refresh() {
   const url = feedUrl();
   try {
     const started = performance.now();
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = await fetchFeed(url);
     const elapsed = performance.now() - started;
-    const feed = FeedMessage.toObject(FeedMessage.decode(bytes), { enums: String, longs: Number });
+    const feed = decodeFeed(bytes);
     // The filter changed in flight, so finally fetches again.
     if (url !== feedUrl()) return;
     render(feed);
@@ -280,9 +284,7 @@ function renderSelected(selected) {
     return;
   }
   const vehicle = selected.entity.vehicle;
-  const badge = $("sel-badge");
-  badge.style.cssText = `--route:#${routeColor(vehicle.trip.routeId)};--route-text:#${routeTextColor(vehicle.trip.routeId)}`;
-  badge.textContent = routeLabel(vehicle.trip.routeId);
+  paintBadge($("sel-badge"), vehicle.trip.routeId);
   $("sel-trip").textContent = `${vehicle.trip.tripId} (${vehicle.trip.startDate})`;
   $("sel-id").textContent = selected.entity.id;
   $("sel-status").textContent = `${(vehicle.currentStatus || "IN_TRANSIT_TO").replaceAll("_", " ")} ${stopLabel(vehicle.stopId)}`;
@@ -385,15 +387,19 @@ async function start() {
   });
   map.on("mouseenter", "vehicles", () => { map.getCanvas().style.cursor = "pointer"; });
   map.on("mouseleave", "vehicles", () => { map.getCanvas().style.cursor = ""; });
-  const stationName = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, anchor: "bottom", offset: 8 });
-  map.on("mousemove", "stations", ({ features: [station] }) => {
-    stationName.setLngLat(station.geometry.coordinates).setText(station.properties.label).addTo(map);
+  const stationPopup = createStationPopup(map, {
+    urls: TRIP_UPDATE_URLS,
+    station: (id) => stations.find((station) => station.id === id),
+    stopName: (id) => stops[id],
+    stopLabel,
+    paintBadge,
+    routes: selectedRoutes,
   });
-  map.on("mouseleave", "stations", () => stationName.remove());
   $("routes").addEventListener("change", (event) => {
     routeFilter = event.target.value;
     drawTracks();
     drawStations();
+    stationPopup.render();
     refresh();
   });
   $("smooth").addEventListener("change", (event) => {

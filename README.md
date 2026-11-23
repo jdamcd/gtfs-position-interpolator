@@ -56,5 +56,6 @@ It needs a [Mapbox](https://docs.mapbox.com/mapbox-gl-js/) public token set as `
 | `GTFS_STATIC_URL` | Static GTFS zip, for the routes, stops and track drawn on the map. |
 | `GTFS_STATIC_REFRESH_HOURS` | How old the map's copy of the static feed can get. 24 by default. |
 | `VITE_POSITIONS_URL` | The server's `/positions` endpoint. |
+| `VITE_TRIP_UPDATE_URLS` | Trip update feeds, separated by commas, for the arrivals shown on hovering a station. The browser fetches them itself, so they must allow cross-origin requests and need no secret key. If unset, stations show only their name. |
 
 Adding `lat`, `lon` and `zoom` to the page address sets where the map opens.

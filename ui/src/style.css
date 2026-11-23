@@ -275,6 +275,62 @@ dd {
   pointer-events: none;
 }
 
-.mapboxgl-popup-anchor-bottom .mapboxgl-popup-tip {
+[class*="mapboxgl-popup-anchor-bottom"] .mapboxgl-popup-tip {
   border-top-color: var(--bg);
+}
+
+[class*="mapboxgl-popup-anchor-top"] .mapboxgl-popup-tip {
+  border-bottom-color: var(--bg);
+}
+
+.mapboxgl-popup-anchor-left .mapboxgl-popup-tip {
+  border-right-color: var(--bg);
+}
+
+.mapboxgl-popup-anchor-right .mapboxgl-popup-tip {
+  border-left-color: var(--bg);
+}
+
+.station-popup h3 {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 600;
+}
+
+.arrivals {
+  min-width: 200px;
+  margin: 4px 0 0;
+  padding: 4px 0 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.arrivals li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.arrivals .badge {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
+
+.arrivals .destination {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arrivals .wait {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.popup-note {
+  margin: 2px 0 0;
+  color: var(--muted);
 }

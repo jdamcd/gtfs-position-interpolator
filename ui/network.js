@@ -116,11 +116,16 @@ export async function buildNetwork(zipUrlOrPath) {
 
   const stops = {};
   const parents = {};
+  const platforms = new Map();
   const stations = [];
   const bounds = [[Infinity, Infinity], [-Infinity, -Infinity]];
   for (const row of table("stops.txt")) {
     if (row.stop_name) stops[row.stop_id] = row.stop_name;
     if (row.parent_station) parents[row.stop_id] = row.parent_station;
+    if (row.parent_station && ["", "0"].includes(row.location_type ?? "")) {
+      if (!platforms.has(row.parent_station)) platforms.set(row.parent_station, []);
+      platforms.get(row.parent_station).push(row.stop_id);
+    }
     const [lat, lon] = [Number(row.stop_lat), Number(row.stop_lon)];
     if (!row.stop_lat || !row.stop_lon || Number.isNaN(lat) || Number.isNaN(lon)) continue;
     // Platforms are left to their parent station, and entrances and the
@@ -141,7 +146,10 @@ export async function buildNetwork(zipUrlOrPath) {
     if (!stationRoutes.has(station)) stationRoutes.set(station, new Set());
     stationRoutes.get(station).add(route);
   }
-  for (const station of stations) station.routes = [...(stationRoutes.get(station.id) ?? [])].sort();
+  for (const station of stations) {
+    station.routes = [...(stationRoutes.get(station.id) ?? [])].sort();
+    station.platforms = platforms.get(station.id) ?? [station.id];
+  }
 
   const joins = [];
   for (const { at } of stations) {
