@@ -5,8 +5,9 @@ import { nearestOnLine } from "./src/geo.js";
 
 const TABLES = ["routes.txt", "trips.txt", "shapes.txt", "stops.txt", "stop_times.txt"];
 
-// About a metre, so that routes sharing track share points.
-const round = (value) => Math.round(Number(value) * 1e5) / 1e5;
+// About 10 cm: enough for shared track to share points, fine enough not to
+// show as steps.
+const round = (value) => Math.round(Number(value) * 1e6) / 1e6;
 
 async function load(source) {
   if (!/^https?:/.test(source)) return readFile(source);
