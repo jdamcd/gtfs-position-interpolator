@@ -297,6 +297,29 @@ func TestTrainWhoseStopDropsOutOfItsTripUpdateStartsFromTheStop(t *testing.T) {
 	checkPlaced(t, only(t, tracker.Feed(later.Add(25*time.Second))), data, "102N", 500, inTransit, "103N")
 }
 
+func TestTrainKeepsGoingWhenTheStopItLeftIsPutBack(t *testing.T) {
+	data := network(t)
+	tracker := New(data, config)
+	tracker.Apply("ace", message(t0,
+		vehicle("1", "L1", "102N", stopped, t0.Add(-10*time.Second)),
+		tripUpdate("1", "L1", call{"102N", t0.Add(-10 * time.Second)}, call{"103N", t0.Add(50 * time.Second)}),
+	), t0)
+	left := t0.Add(15 * time.Second)
+	tracker.Apply("ace", message(left,
+		vehicle("1", "L1", "102N", stopped, t0.Add(-10*time.Second)),
+		tripUpdate("1", "L1", call{"103N", left.Add(50 * time.Second)}),
+	), left)
+	putBack := left.Add(10 * time.Second)
+	tracker.Apply("ace", message(putBack,
+		vehicle("1", "L1", "102N", stopped, putBack.Add(-5*time.Second)),
+		tripUpdate("1", "L1", call{"102N", putBack.Add(-5 * time.Second)}, call{"103N", putBack.Add(80 * time.Second)}),
+	), putBack)
+
+	// 20 m/s until the stop is put back, then 10 m/s to make the later ETA.
+	checkPlaced(t, only(t, tracker.Feed(putBack)), data, "102N", 200, inTransit, "103N")
+	checkPlaced(t, only(t, tracker.Feed(putBack.Add(40*time.Second))), data, "102N", 600, inTransit, "103N")
+}
+
 func TestTrainEasesOutOfTheStop(t *testing.T) {
 	data := network(t)
 	tracker := New(data, Config{MaxAge: 10 * time.Minute, Ramp: 20 * time.Second})

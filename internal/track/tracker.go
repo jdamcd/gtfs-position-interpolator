@@ -177,6 +177,20 @@ func (t *Tracker) trainFromVehicle(feed string, v *gtfs.VehiclePosition, tu *gtf
 	if !ok || (obs.finished && header.Sub(timestamp) > terminalDwell) {
 		return nil
 	}
+	// Some feeds briefly put back the stop a train has just left. The train
+	// has usually gone, so keep it heading for the next stop at its new ETA.
+	if prev != nil && prev.leg != nil && obs.at != "" && obs.at == prev.obs.from {
+		ahead := prev.obs
+		for _, u := range tu.GetStopTimeUpdate() {
+			if u.GetStopId() == ahead.to {
+				if eta := due(u); !eta.IsZero() {
+					ahead.eta = eta
+				}
+				break
+			}
+		}
+		obs = ahead
+	}
 	trip := t.withRoute(v.GetTrip())
 	vehicle := v.Vehicle
 	if vehicle == nil {

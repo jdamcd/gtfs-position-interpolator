@@ -63,11 +63,7 @@ func observe(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, known func(stop strin
 		if u.GetStopId() == stop && o.sequence == nil {
 			o.sequence = v.CurrentStopSequence
 		}
-		if at := u.GetArrival().GetTime(); at != 0 {
-			o.eta = time.Unix(at, 0)
-		} else if at := u.GetDeparture().GetTime(); at != 0 {
-			o.eta = time.Unix(at, 0)
-		}
+		o.eta = due(u)
 		break
 	}
 	switch {
@@ -80,6 +76,16 @@ func observe(v *gtfs.VehiclePosition, tu *gtfs.TripUpdate, known func(stop strin
 		return observation{to: stop, sequence: v.CurrentStopSequence}, true
 	}
 	return observation{}, false
+}
+
+func due(u *gtfs.TripUpdate_StopTimeUpdate) time.Time {
+	if at := u.GetArrival().GetTime(); at != 0 {
+		return time.Unix(at, 0)
+	}
+	if at := u.GetDeparture().GetTime(); at != 0 {
+		return time.Unix(at, 0)
+	}
+	return time.Time{}
 }
 
 // A train is shown standing at its last stop for this long after arriving.
