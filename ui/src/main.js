@@ -341,7 +341,6 @@ function renderSelected(selected) {
   $("sel-trip").textContent = `${vehicle.trip.tripId} (${vehicle.trip.startDate})`;
   $("sel-id").textContent = selected.entity.id;
   $("sel-status").textContent = `${(vehicle.currentStatus || "IN_TRANSIT_TO").replaceAll("_", " ")} ${stopLabel(vehicle.stopId)}`;
-  $("sel-sequence").textContent = vehicle.currentStopSequence ?? "not set";
   $("sel-position").textContent = `${vehicle.position.latitude.toFixed(6)}, ${vehicle.position.longitude.toFixed(6)}`;
   $("sel-bearing").textContent = vehicle.position.bearing == null ? "not set" : `${vehicle.position.bearing.toFixed(0)}°`;
   $("sel-timestamp").textContent = vehicle.timestamp
