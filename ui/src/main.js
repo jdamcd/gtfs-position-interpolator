@@ -11,7 +11,7 @@ const POSITIONS_URL = import.meta.env.VITE_POSITIONS_URL;
 const ROUTE_LABELS = Object.fromEntries((import.meta.env.VITE_ROUTE_LABELS || "").split(",").filter(Boolean).map((pair) => pair.split(":")));
 const STATUSES = { INCOMING_AT: "arriving", IN_TRANSIT_TO: "in transit", STOPPED_AT: "stopped" };
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
-const POLL_INTERVAL = 5000;
+const POLL_INTERVAL = 2500;
 const NETWORK_INTERVAL = 60 * 60 * 1000;
 const DEFAULT_COLOR = "555555";
 const DEFAULT_TEXT_COLOR = "FFFFFF";
