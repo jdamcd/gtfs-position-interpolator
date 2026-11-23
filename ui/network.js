@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "csv-parse/sync";
 import { strFromU8, unzipSync } from "fflate";
-import { metresFrom } from "./src/geo.js";
+import { nearestOnLine } from "./src/geo.js";
 
 const TABLES = ["routes.txt", "trips.txt", "shapes.txt", "stops.txt", "stop_times.txt"];
 
@@ -38,18 +38,8 @@ const MAX_JOIN_METRES = 300;
 function nearestOnTracks(tracks, at) {
   let best = null;
   for (const track of tracks) {
-    for (let i = 1; i < track.line.length; i++) {
-      const [p, q] = [track.line[i - 1], track.line[i]];
-      const [ax, ay] = metresFrom(at, p);
-      const [bx, by] = metresFrom(at, q);
-      const [dx, dy] = [bx - ax, by - ay];
-      const length = dx * dx + dy * dy;
-      const t = length ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / length)) : 0;
-      const distance = Math.hypot(ax + t * dx, ay + t * dy);
-      if (!best || distance < best.distance) {
-        best = { distance, track, point: [round(p[0] + t * (q[0] - p[0])), round(p[1] + t * (q[1] - p[1]))] };
-      }
-    }
+    const nearest = nearestOnLine(track.line, at);
+    if (!best || nearest.away < best.away) best = { ...nearest, track };
   }
   return best;
 }
@@ -155,8 +145,8 @@ export async function buildNetwork(zipUrlOrPath) {
   const joins = [];
   for (const { at } of stations) {
     const nearest = nearestOnTracks(tracks, at);
-    if (nearest && nearest.distance > JOIN_METRES && nearest.distance <= MAX_JOIN_METRES) {
-      joins.push({ label: nearest.track.label, line: [nearest.point, at] });
+    if (nearest && nearest.away > JOIN_METRES && nearest.away <= MAX_JOIN_METRES) {
+      joins.push({ label: nearest.track.label, line: [nearest.point.map(round), at] });
     }
   }
   tracks.push(...joins);

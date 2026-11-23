@@ -1,6 +1,8 @@
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
+import { cumulative, distance, pointAt } from "./geo.js";
+import { glidePath, indexTracks } from "./glide.js";
 import { layoutTracks, prepareTracks } from "./layout.js";
 import "./style.css";
 
@@ -31,6 +33,7 @@ let routes = {};
 let stops = {};
 let tracks = [];
 let preparedTracks = [];
+let glideIndex = indexTracks([], []);
 let stations = [];
 let framed = Boolean(VIEW.center);
 let moved = false;
@@ -227,7 +230,7 @@ function drawStations() {
 function positionAt(vehicle, now) {
   if (!smooth) return vehicle.to;
   const t = Math.min(1, (now - vehicle.start) / POLL_INTERVAL);
-  return [vehicle.from[0] + (vehicle.to[0] - vehicle.from[0]) * t, vehicle.from[1] + (vehicle.to[1] - vehicle.from[1]) * t];
+  return pointAt(vehicle.path, vehicle.distances, t * vehicle.distances.at(-1));
 }
 
 function animate(now) {
@@ -292,7 +295,7 @@ function render(feed) {
     // drawn is too old to glide from.
     const stale = !drawn || now - drawn.start > 2 * POLL_INTERVAL;
     let from = stale ? to : positionAt(drawn, now);
-    if (new mapboxgl.LngLat(...from).distanceTo(new mapboxgl.LngLat(...to)) > MAX_GLIDE_METRES) from = to;
+    if (distance(from, to) > MAX_GLIDE_METRES) from = to;
     const [color, textColor, label] = [routeColor, routeTextColor, routeLabel].map((of) => of(vehicle.trip.routeId));
     const marker = `marker ${color} ${textColor} ${label}`;
     const properties = { id: entity.id, stopped: status === "STOPPED_AT" };
@@ -300,8 +303,10 @@ function render(feed) {
       properties.bearing = vehicle.position.bearing;
       properties.arrow = ensureImage(`arrow ${color}`, () => arrowImage(color));
     }
+    const path = glidePath(glideIndex, vehicle.trip.routeId, from, to);
     vehicles.set(entity.id, {
-      from,
+      path,
+      distances: cumulative(path),
       to,
       start: now,
       properties,
@@ -383,6 +388,7 @@ async function loadNetwork() {
     const network = await response.json();
     ({ routes, stops, stations, tracks } = network);
     preparedTracks = prepareTracks(tracks);
+    glideIndex = indexTracks(tracks, preparedTracks);
     if (!framed) frame(network.bounds);
     drawTracks();
     drawStations();
@@ -433,7 +439,7 @@ async function start() {
     smooth = event.target.checked;
     // Turned back on mid-poll, trains wait where they are for the next
     // position rather than jumping back to finish the glide.
-    for (const vehicle of vehicles.values()) vehicle.from = vehicle.to;
+    for (const vehicle of vehicles.values()) Object.assign(vehicle, { path: [vehicle.to, vehicle.to], distances: [0, 0] });
     moved = true;
   });
 

@@ -1,4 +1,4 @@
-import { metresFrom } from "./geo.js";
+import { cumulative, metresFrom, pointAt, slice } from "./geo.js";
 
 // Where a track's lines change, each eases to its new place over this
 // distance in steps, rather than jumping.
@@ -10,26 +10,6 @@ const LOOK_METRES = 60;
 const FULL_TURN_METRES = 10;
 // A crossing costs this much more than a line on the wrong side of a branch.
 const CROSSING_COST = 10;
-
-function cumulative(line) {
-  const distances = [0];
-  for (let i = 1; i < line.length; i++) distances.push(distances[i - 1] + Math.hypot(...metresFrom(line[i - 1], line[i])));
-  return distances;
-}
-
-function pointAt(line, distances, distance) {
-  let i = 1;
-  while (i < line.length - 1 && distances[i] < distance) i++;
-  const span = distances[i] - distances[i - 1];
-  const t = span ? Math.max(0, Math.min(1, (distance - distances[i - 1]) / span)) : 0;
-  const [a, b] = [line[i - 1], line[i]];
-  return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
-}
-
-function slice(line, distances, from, to) {
-  const inside = line.filter((_, i) => distances[i] > from && distances[i] < to);
-  return [pointAt(line, distances, from), ...inside, pointAt(line, distances, to)];
-}
 
 // Tracks meet where their ends share a point.
 export function prepareTracks(tracks) {
@@ -62,6 +42,7 @@ export function prepareTracks(tracks) {
         const turn = (ax * by - ay * bx) / (Math.hypot(ax, ay) || 1);
         a.end.neighbours.push({
           index: b.index,
+          last: b.last,
           through,
           // line-offset is to the right of each track's own direction.
           flip: (a.last === b.last ? -1 : 1) * (through ? 1 : -1),
