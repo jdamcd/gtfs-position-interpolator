@@ -9,7 +9,6 @@ import "./style.css";
 const { FeedMessage } = GtfsRealtimeBindings.transit_realtime;
 const POSITIONS_URL = import.meta.env.VITE_POSITIONS_URL;
 const ROUTE_LABELS = Object.fromEntries((import.meta.env.VITE_ROUTE_LABELS || "").split(",").filter(Boolean).map((pair) => pair.split(":")));
-const STATUSES = { INCOMING_AT: "arriving", IN_TRANSIT_TO: "in transit", STOPPED_AT: "stopped" };
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 const POLL_INTERVAL = 2500;
 const NETWORK_INTERVAL = 60 * 60 * 1000;
@@ -23,6 +22,7 @@ const LABEL_FONT = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif';
 const DARK = matchMedia("(prefers-color-scheme: dark)").matches;
 const EMPTY = { type: "FeatureCollection", features: [] };
 const DEFAULT_ZOOM = 13;
+const SELECTED_ZOOM = 16;
 const VIEW = viewFromUrl();
 
 const $ = (id) => document.getElementById(id);
@@ -267,7 +267,7 @@ async function refresh() {
     render(feed);
     $("stat-url").textContent = `GET ${url}`;
     const age = Date.now() / 1000 - feed.header.timestamp;
-    $("stat-response").textContent = `${(bytes.length / 1000).toFixed(1)} KB in ${elapsed.toFixed(0)} ms (${age.toFixed(1)} s old)`;
+    $("stat-response").textContent = `${(bytes.length / 1000).toFixed(1)}KB in ${elapsed.toFixed(0)}ms (${age.toFixed(1)}s old)`;
     if (setupError) showError(setupError);
     else $("error").hidden = true;
   } catch (err) {
@@ -325,10 +325,7 @@ function render(feed) {
     frame(bounds);
   }
   $("stat-count").textContent = seen.size;
-  $("stat-status").textContent = Object.entries(STATUSES)
-    .map(([status, name]) => [statusCounts[status] || 0, name])
-    .sort(([a], [b]) => b - a)
-    .map(([count, name]) => `${count} ${name}`).join(", ");
+  for (const cell of $("status-counts").querySelectorAll("td")) cell.textContent = statusCounts[cell.dataset.status] || 0;
   renderSelected(selected);
 }
 
@@ -347,9 +344,12 @@ function renderSelected(selected) {
   $("sel-id").textContent = selected.entity.id;
   $("sel-status").textContent = `${(vehicle.currentStatus || "IN_TRANSIT_TO").replaceAll("_", " ")} ${stopLabel(vehicle.stopId)}`;
   $("sel-position").textContent = `${vehicle.position.latitude.toFixed(6)}, ${vehicle.position.longitude.toFixed(6)}`;
-  $("sel-bearing").textContent = vehicle.position.bearing == null ? "not set" : `${vehicle.position.bearing.toFixed(0)}°`;
+  const { bearing } = vehicle.position;
+  $("sel-arrow").hidden = bearing == null;
+  $("sel-arrow").firstElementChild.style.transform = `rotate(${bearing ?? 0}deg)`;
+  $("sel-bearing").textContent = bearing == null ? "not set" : `${bearing.toFixed(0)}°`;
   $("sel-timestamp").textContent = vehicle.timestamp
-    ? `${vehicle.timestamp}, ${(selected.headerTimestamp - vehicle.timestamp).toFixed(0)} s before header`
+    ? `${vehicle.timestamp}, ${(selected.headerTimestamp - vehicle.timestamp).toFixed(0)}s before header`
     : "not set";
 }
 
@@ -370,11 +370,18 @@ function viewFromUrl() {
   return { center: lat !== null && lon !== null ? [lon, lat] : null, zoom: number("zoom", 0, 22) };
 }
 
+// How far in from the map's left edge the panel covers it.
+function panelCover() {
+  const panel = $("panel").getBoundingClientRect();
+  const area = $("map").getBoundingClientRect();
+  const overlaps = panel.left < area.right && panel.right > area.left && panel.top < area.bottom && panel.bottom > area.top;
+  return overlaps ? panel.right - area.left : 0;
+}
+
 function frame(bounds) {
   framed = true;
   if (VIEW.center) return;
-  const left = innerWidth > 800 ? 340 : 40;
-  map.fitBounds(bounds, { padding: { top: 40, right: 40, bottom: 40, left }, animate: false });
+  map.fitBounds(bounds, { padding: { top: 40, right: 40, bottom: 40, left: panelCover() + 40 }, animate: false });
   if (VIEW.zoom !== null) map.jumpTo({ center: mapboxgl.LngLatBounds.convert(bounds).getCenter(), zoom: VIEW.zoom });
 }
 
@@ -410,13 +417,24 @@ async function start() {
     container: "map",
     accessToken: MAPBOX_TOKEN,
     style: `mapbox://styles/mapbox/${DARK ? "dark" : "light"}-v11`,
+    // North stays up: there's no compass to reset the view, and the bearing
+    // arrow in the panel assumes it.
+    dragRotate: false,
+    maxPitch: 0,
     ...(VIEW.center && { center: VIEW.center, zoom: VIEW.zoom ?? DEFAULT_ZOOM }),
   });
+  map.touchZoomRotate.disableRotation();
+  map.keyboard.disableRotation();
   map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
   map.on("error", ({ error }) => showError(`Map error: ${error?.message || "unknown"}`));
   await map.once("load");
   addLayers();
 
+  $("sel-zoom").addEventListener("click", () => {
+    const vehicle = vehicles.get(selectedId);
+    if (!vehicle) return;
+    map.flyTo({ center: positionAt(vehicle, performance.now()), zoom: Math.max(map.getZoom(), SELECTED_ZOOM), offset: [panelCover() / 2, 0] });
+  });
   map.on("click", (event) => {
     const [hit] = map.queryRenderedFeatures(event.point, { layers: ["vehicles"] });
     if (hit) select(hit.properties.id);
