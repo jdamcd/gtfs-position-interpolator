@@ -12,6 +12,7 @@ const POSITIONS_URL = import.meta.env.VITE_POSITIONS_URL;
 const commaList = (text) => text.split(",").map((item) => item.trim()).filter(Boolean);
 const envList = (name) => commaList(import.meta.env[name] || "");
 const envPairs = (name) => Object.fromEntries(envList(name).map((pair) => pair.split(":")));
+const ROUTE_ALIASES = envPairs("VITE_ROUTE_ALIASES");
 const ROUTE_LABELS = envPairs("VITE_ROUTE_LABELS");
 const DIAMOND_ROUTES = new Set(envList("VITE_DIAMOND_ROUTES"));
 const TRIP_UPDATE_URLS = envList("VITE_TRIP_UPDATE_URLS");
@@ -53,9 +54,17 @@ function showError(message) {
   $("error").hidden = false;
 }
 
+// Aliases are for routes only the realtime feeds use, and copy their target's
+// label and shape, so they're applied last.
 function applyRouteSettings(network) {
   for (const [id, name] of Object.entries(ROUTE_LABELS)) network.routes[id] = { ...network.routes[id], name };
   for (const id of DIAMOND_ROUTES) network.routes[id] = { ...network.routes[id], shape: "diamond" };
+  for (const [alias, target] of Object.entries(ROUTE_ALIASES)) {
+    network.routes[alias] = network.routes[target];
+    for (const { routes } of [...network.tracks, ...network.stations]) {
+      if (routes.includes(target)) routes.push(alias);
+    }
+  }
 }
 
 function routeColor(route) {
