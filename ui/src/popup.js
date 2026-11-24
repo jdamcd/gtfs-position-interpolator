@@ -18,6 +18,8 @@ function formatWait(seconds) {
 export function createStationPopup(map, { urls, station, stopName, stopLabel, paintBadge, routes }) {
   const arrivals = urls.length ? createArrivals(urls) : null;
   const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 8, maxWidth: "280px" });
+  let hovered = null;
+  let pinned = null;
   let shown = null;
   let timer = null;
 
@@ -68,23 +70,43 @@ export function createStationPopup(map, { urls, station, stopName, stopLabel, pa
     render();
   }
 
-  function show(id) {
-    if (id === shown) return;
-    shown = id;
-    clearInterval(timer);
-    timer = null;
-    render();
-    if (id && arrivals) {
-      update();
-      timer = setInterval(update, REFRESH_INTERVAL);
+  // Stations gone from the map are let go, so nothing is fetched for a
+  // popup that can't show.
+  function redraw() {
+    const drawn = (id) => (id && station(id) ? id : null);
+    hovered = drawn(hovered);
+    pinned = drawn(pinned);
+    const id = hovered ?? pinned;
+    if (id !== shown) {
+      shown = id;
+      clearInterval(timer);
+      timer = null;
+      if (id && arrivals) {
+        update();
+        timer = setInterval(update, REFRESH_INTERVAL);
+      }
     }
+    render();
   }
 
-  map.on("mousemove", "stations", ({ features: [feature] }) => show(feature.properties.id));
-  map.on("mouseleave", "stations", () => show(null));
+  map.on("mousemove", "stations", ({ features: [feature] }) => {
+    if (feature.properties.id === hovered) return;
+    hovered = feature.properties.id;
+    redraw();
+  });
+  map.on("mouseleave", "stations", () => {
+    hovered = null;
+    redraw();
+  });
   document.addEventListener("visibilitychange", () => {
     if (timer) update();
   });
 
-  return { render };
+  return {
+    pin(id) {
+      pinned = id;
+      redraw();
+    },
+    redraw,
+  };
 }

@@ -160,17 +160,19 @@ function drawTracks() {
   map.getSource("tracks").setData({ type: "FeatureCollection", features });
 }
 
-function drawStations() {
+function drawnStations() {
   const wanted = new Set(selectedRoutes());
+  return stations.filter(({ routes }) => wanted.size === 0 || routes.some((route) => wanted.has(route)));
+}
+
+function drawStations() {
   map.getSource("stations").setData({
     type: "FeatureCollection",
-    features: stations
-      .filter(({ routes }) => wanted.size === 0 || routes.some((route) => wanted.has(route)))
-      .map(({ id, at }) => ({
-        type: "Feature",
-        properties: { id },
-        geometry: { type: "Point", coordinates: at },
-      })),
+    features: drawnStations().map(({ id, at }) => ({
+      type: "Feature",
+      properties: { id },
+      geometry: { type: "Point", coordinates: at },
+    })),
   });
 }
 
@@ -380,26 +382,34 @@ async function start() {
     if (!vehicle) return;
     map.flyTo({ center: positionAt(vehicle, performance.now()), zoom: Math.max(map.getZoom(), SELECTED_ZOOM), offset: [panelCover() / 2, 0] });
   });
-  map.on("click", (event) => {
-    const [hit] = map.queryRenderedFeatures(event.point, { layers: ["vehicles"] });
-    if (hit) select(hit.properties.id);
-    else if (selectedId) select(null);
-  });
-  map.on("mouseenter", "vehicles", () => { map.getCanvas().style.cursor = "pointer"; });
-  map.on("mouseleave", "vehicles", () => { map.getCanvas().style.cursor = ""; });
   const stationPopup = createStationPopup(map, {
     urls: TRIP_UPDATE_URLS,
-    station: (id) => stations.find((station) => station.id === id),
+    station: (id) => drawnStations().find((station) => station.id === id),
     stopName: (id) => stops[id],
     stopLabel,
     paintBadge,
     routes: selectedRoutes,
   });
+  map.on("click", (event) => {
+    const [hit] = map.queryRenderedFeatures(event.point, { layers: ["vehicles", "stations"] });
+    if (hit?.layer.id === "vehicles") {
+      select(hit.properties.id);
+    } else if (hit) {
+      stationPopup.pin(hit.properties.id);
+    } else {
+      if (selectedId) select(null);
+      stationPopup.pin(null);
+    }
+  });
+  for (const layer of ["vehicles", "stations"]) {
+    map.on("mouseenter", layer, () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", layer, () => { map.getCanvas().style.cursor = ""; });
+  }
   $("routes").addEventListener("change", (event) => {
     routeFilter = event.target.value;
     drawTracks();
     drawStations();
-    stationPopup.render();
+    stationPopup.redraw();
     refresh();
   });
   $("smooth").addEventListener("change", (event) => {
