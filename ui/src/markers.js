@@ -1,4 +1,7 @@
 const LABEL_FONT = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif';
+const DIAMOND_RADIUS = 11.5;
+// Room beyond a diamond for the selected ring and the shadow.
+const DIAMOND_MARGIN = 8;
 
 function canvas(width, height) {
   const element = document.createElement("canvas");
@@ -11,33 +14,61 @@ function canvas(width, height) {
 
 // The label is drawn into the marker so overlapping markers hide each
 // other's labels. As map text, every label would sit on top of every marker.
-export function markerImage(color, textColor, label, selected) {
+function pill(textWidth) {
+  const width = Math.max(20, textWidth + 5);
+  return {
+    width: width + 12,
+    height: 32,
+    trace: (context, grow) => context.roundRect(6 - grow, 6 - grow, width + 2 * grow, 20 + 2 * grow, 10 + grow),
+  };
+}
+
+function diamond(textWidth) {
+  // Wide enough for the label to clear the diamond's sides.
+  const radius = Math.max(DIAMOND_RADIUS, textWidth / 2 + 6);
+  const size = 2 * Math.ceil(radius + DIAMOND_MARGIN);
+  const c = size / 2;
+  return {
+    width: size,
+    height: size,
+    trace: (context, grow) => {
+      const r = radius + grow * Math.SQRT2;
+      context.moveTo(c, c - r);
+      context.lineTo(c + r, c);
+      context.lineTo(c, c + r);
+      context.lineTo(c - r, c);
+      context.closePath();
+    },
+  };
+}
+
+export function markerImage(color, textColor, label, shape, selected) {
   const measure = canvas(1, 1);
   measure.font = LABEL_FONT;
-  const width = Math.max(20, Math.ceil(measure.measureText(label).width) + 5);
-  const context = canvas(width + 12, 32);
-  const pill = (grow, fill) => {
+  const { width, height, trace } = (shape === "diamond" ? diamond : pill)(Math.ceil(measure.measureText(label).width));
+  const context = canvas(width, height);
+  const outline = (grow, fill) => {
     context.beginPath();
-    context.roundRect(6 - grow, 6 - grow, width + 2 * grow, 20 + 2 * grow, 10 + grow);
+    trace(context, grow);
     context.fillStyle = fill;
     context.fill();
   };
   if (selected) {
-    pill(4.5, "#111");
-    pill(2, "#fff");
+    outline(4.5, "#111");
+    outline(2, "#fff");
   } else {
     context.shadowColor = "rgb(0 0 0 / 0.45)";
     context.shadowBlur = 3;
     context.shadowOffsetY = 2;
-    pill(1.5, "#fff");
+    outline(1.5, "#fff");
     context.shadowColor = "transparent";
   }
-  pill(0, `#${color}`);
+  outline(0, `#${color}`);
   context.font = LABEL_FONT;
   context.fillStyle = `#${textColor}`;
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(label, (width + 12) / 2, 16.5);
+  context.fillText(label, width / 2, height / 2 + 0.5);
   return context;
 }
 

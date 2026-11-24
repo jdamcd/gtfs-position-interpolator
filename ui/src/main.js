@@ -9,8 +9,12 @@ import { createStationPopup } from "./popup.js";
 import "./style.css";
 
 const POSITIONS_URL = import.meta.env.VITE_POSITIONS_URL;
-const ROUTE_LABELS = Object.fromEntries((import.meta.env.VITE_ROUTE_LABELS || "").split(",").filter(Boolean).map((pair) => pair.split(":")));
-const TRIP_UPDATE_URLS = (import.meta.env.VITE_TRIP_UPDATE_URLS || "").split(",").map((url) => url.trim()).filter(Boolean);
+const commaList = (text) => text.split(",").map((item) => item.trim()).filter(Boolean);
+const envList = (name) => commaList(import.meta.env[name] || "");
+const envPairs = (name) => Object.fromEntries(envList(name).map((pair) => pair.split(":")));
+const ROUTE_LABELS = envPairs("VITE_ROUTE_LABELS");
+const DIAMOND_ROUTES = new Set(envList("VITE_DIAMOND_ROUTES"));
+const TRIP_UPDATE_URLS = envList("VITE_TRIP_UPDATE_URLS");
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 const POLL_INTERVAL = 2500;
 const NETWORK_INTERVAL = 60 * 60 * 1000;
@@ -49,6 +53,11 @@ function showError(message) {
   $("error").hidden = false;
 }
 
+function applyRouteSettings(network) {
+  for (const [id, name] of Object.entries(ROUTE_LABELS)) network.routes[id] = { ...network.routes[id], name };
+  for (const id of DIAMOND_ROUTES) network.routes[id] = { ...network.routes[id], shape: "diamond" };
+}
+
 function routeColor(route) {
   return routes[route]?.color || DEFAULT_COLOR;
 }
@@ -58,11 +67,16 @@ function routeTextColor(route) {
 }
 
 function routeLabel(route) {
-  return ROUTE_LABELS[route] || routes[route]?.name || route || "?";
+  return routes[route]?.name || route || "?";
+}
+
+function routeShape(route) {
+  return routes[route]?.shape || "pill";
 }
 
 function paintBadge(node, route) {
   node.style.cssText = `--route:#${routeColor(route)};--route-text:#${routeTextColor(route)}`;
+  node.dataset.shape = routeShape(route);
   node.textContent = routeLabel(route);
 }
 
@@ -73,7 +87,7 @@ function stopLabel(id) {
 
 function selectedRoutes() {
   const ids = new Map(Object.keys(routes).map((id) => [id.toLowerCase(), id]));
-  return routeFilter.split(",").map((r) => r.trim()).filter(Boolean).map((r) => ids.get(r.toLowerCase()) || r);
+  return commaList(routeFilter).map((r) => ids.get(r.toLowerCase()) || r);
 }
 
 function feedUrl() {
@@ -245,8 +259,8 @@ function render(feed) {
     const stale = !drawn || now - drawn.start > 2 * POLL_INTERVAL;
     let from = stale ? to : positionAt(drawn, now);
     if (distance(from, to) > MAX_GLIDE_METRES) from = to;
-    const [color, textColor, label] = [routeColor, routeTextColor, routeLabel].map((of) => of(vehicle.trip.routeId));
-    const marker = `marker ${color} ${textColor} ${label}`;
+    const [color, textColor, label, shape] = [routeColor, routeTextColor, routeLabel, routeShape].map((of) => of(vehicle.trip.routeId));
+    const marker = `marker ${shape} ${color} ${textColor} ${label}`;
     const properties = { id: entity.id, stopped: status === "STOPPED_AT" };
     if (vehicle.position.bearing != null) {
       properties.bearing = vehicle.position.bearing;
@@ -259,8 +273,8 @@ function render(feed) {
       to,
       start: now,
       properties,
-      icon: ensureImage(marker, () => markerImage(color, textColor, label, false)),
-      selectedIcon: ensureImage(`selected ${marker}`, () => markerImage(color, textColor, label, true)),
+      icon: ensureImage(marker, () => markerImage(color, textColor, label, shape, false)),
+      selectedIcon: ensureImage(`selected ${marker}`, () => markerImage(color, textColor, label, shape, true)),
     });
     if (entity.id === selectedId) selected = { entity, headerTimestamp: feed.header.timestamp };
   }
@@ -340,6 +354,7 @@ async function loadNetwork() {
       throw new Error(plain ? await response.text() : `${response.status} ${response.statusText}`);
     }
     const network = await response.json();
+    applyRouteSettings(network);
     ({ routes, stops, stations, tracks } = network);
     preparedTracks = prepareTracks(tracks);
     glideIndex = indexTracks(tracks, preparedTracks);

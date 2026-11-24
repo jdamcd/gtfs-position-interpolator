@@ -266,6 +266,11 @@ dd {
   font: 700 11px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+.badge[data-shape="diamond"] {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  transform: scale(1.15);
+}
+
 .mapboxgl-popup-content {
   padding: 4px 8px;
   border-radius: 5px;
