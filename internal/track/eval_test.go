@@ -11,19 +11,19 @@ package track
 import (
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"compress/gzip"
-	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"iter"
 	"maps"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,8 +70,8 @@ type input struct {
 type stopKey struct{ trip, stop string }
 
 type arrival struct {
-	at    time.Time
-	group string
+	at           time.Time
+	group, route string
 }
 
 type fix struct {
@@ -223,35 +223,28 @@ func decode(files []captureFile, each func(captureFile, *gtfs.FeedMessage)) erro
 	return nil
 }
 
-func routeTypes(zipped []byte) (map[string]string, error) {
+func column(zipped []byte, file, key, value string) (map[string]string, error) {
 	zr, err := zip.NewReader(bytes.NewReader(zipped), int64(len(zipped)))
 	if err != nil {
 		return nil, err
 	}
-	f, err := zr.Open("routes.txt")
+	out := map[string]string{}
+	return out, static.ReadTable(zr, file, []string{key, value}, func(row []string) error {
+		out[row[0]] = row[1]
+		return nil
+	})
+}
+
+func routeTypes(zipped []byte) (map[string]string, error) {
+	kinds, err := column(zipped, "routes.txt", "route_id", "route_type")
 	if err != nil {
 		return nil, err
-	}
-	defer f.Close()
-	rows, err := csv.NewReader(f).ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	id, kind := -1, -1
-	for i, c := range rows[0] {
-		switch strings.TrimPrefix(c, "\xef\xbb\xbf") {
-		case "route_id":
-			id = i
-		case "route_type":
-			kind = i
-		}
 	}
 	names := map[string]string{"0": "light rail", "1": "subway", "2": "commuter rail"}
-	out := map[string]string{}
-	for _, r := range rows[1:] {
-		out[r[id]] = names[r[kind]]
+	for id, kind := range kinds {
+		kinds[id] = names[kind]
 	}
-	return out, nil
+	return kinds, nil
 }
 
 func entityRoute(e *gtfs.FeedEntity) string {
@@ -358,7 +351,8 @@ func (r *references) add(in input) {
 		if ts := v.GetTimestamp(); ts != 0 {
 			at = time.Unix(int64(ts), 0)
 		}
-		r.arrivals[k] = arrival{at, group(r.groups, in.feed, v.GetTrip())}
+		route := cmp.Or(v.GetTrip().GetRouteId(), r.data.Route(v.GetTrip().GetTripId()))
+		r.arrivals[k] = arrival{at, group(r.groups, in.feed, v.GetTrip()), route}
 	}
 }
 
@@ -388,10 +382,33 @@ type result struct {
 	// the fix is ahead of the drawn train (+ means drawn behind), and how far
 	// the fix is off the leg's line.
 	along, away map[int]float64
-	groups      map[string]*tally
+	tallies     map[slot]*tally
+	events      []event
 }
 
-// A tally is what one group of trains did while scored.
+// A slot is the trains of one group and route drawn in one hour.
+type slot struct {
+	group, route string
+	hour         int64
+}
+
+func hourOf(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, t.Hour(), 0, 0, 0, t.Location())
+}
+
+// An event is a one-second step that jumped or went backwards.
+type event struct {
+	slot
+	kind     string
+	returned bool
+	trip     string
+	at       time.Time
+	from, to placement
+	metres   float64
+}
+
+// A tally is what a set of trains did while scored.
 type tally struct {
 	// Train-seconds drawn, and those drawn faster than sprintSpeed.
 	seconds, sprints int
@@ -402,20 +419,36 @@ type tally struct {
 	backSteps, returned int
 }
 
-// total sums the tallies of group g, or of every group for "all".
-func (r result) total(g string) tally {
+func (t *tally) count(e event) {
+	if e.kind == "jump" {
+		t.leaps = append(t.leaps, e.metres)
+		return
+	}
+	t.backSteps++
+	if e.returned {
+		t.returned++
+	}
+}
+
+func (r result) total(match func(slot) bool) tally {
 	var sum tally
-	for name, t := range r.groups {
-		if g == "all" || name == g {
+	for s, t := range r.tallies {
+		if match(s) {
 			sum.seconds += t.seconds
 			sum.sprints += t.sprints
-			sum.leaps = append(sum.leaps, t.leaps...)
-			sum.backSteps += t.backSteps
-			sum.returned += t.returned
+		}
+	}
+	for _, e := range r.events {
+		if match(e.slot) {
+			sum.count(e)
 		}
 	}
 	slices.Sort(sum.leaps)
 	return sum
+}
+
+func inGroup(g string) func(slot) bool {
+	return func(s slot) bool { return g == "all" || s.group == g }
 }
 
 type drawnState struct {
@@ -471,7 +504,7 @@ func replay(data *static.Data, inputs <-chan input, path string, fixesAt map[int
 		errors:     map[int]float64{},
 		along:      map[int]float64{},
 		away:       map[int]float64{},
-		groups:     map[string]*tally{},
+		tallies:    map[slot]*tally{},
 	}
 	lastTarget := map[string]string{}
 	lastStood := map[string]string{}
@@ -483,6 +516,7 @@ func replay(data *static.Data, inputs <-chan input, path string, fixesAt map[int
 				tracker.Apply(next.feed, msg, next.fetched)
 			}
 		}
+		hour := hourOf(now).Unix()
 		lastState, states = states, lastState
 		clear(states)
 		for feed, snap := range tracker.feeds {
@@ -493,11 +527,11 @@ func replay(data *static.Data, inputs <-chan input, path string, fixesAt map[int
 				cur := stateOf(tr, now, data)
 				states[key] = cur
 				if !now.Before(scoreFrom) {
-					g := group(groups, feed, tr.trip)
-					t := res.groups[g]
+					k := slot{group(groups, feed, tr.trip), tr.trip.GetRouteId(), hour}
+					t := res.tallies[k]
 					if t == nil {
 						t = &tally{}
-						res.groups[g] = t
+						res.tallies[k] = t
 					}
 					t.seconds++
 					if cur.speed > sprintSpeed {
@@ -506,13 +540,11 @@ func replay(data *static.Data, inputs <-chan input, path string, fixesAt map[int
 					if prev, ok := lastState[key]; ok {
 						d := geo.Distance(prev.at.point, cur.at.point)
 						if d > 40 {
-							t.leaps = append(t.leaps, d)
+							res.events = append(res.events, event{k, "jump", false, key, now, prev.at, cur.at, d})
 						}
 						if d > 10 && backwards(prev, cur) {
-							t.backSteps++
-							if prev.moving && !cur.moving && (cur.at.stop == prev.obs.from || cur.at.stop == lastStood[key]) {
-								t.returned++
-							}
+							returned := prev.moving && !cur.moving && (cur.at.stop == prev.obs.from || cur.at.stop == lastStood[key])
+							res.events = append(res.events, event{k, "back", returned, key, now, prev.at, cur.at, d})
 						}
 					}
 				}
@@ -587,7 +619,7 @@ func pct(n, of int) float64 {
 	return 100 * float64(n) / float64(max(1, of))
 }
 
-func withAll(groups map[string]bool) []string {
+func withAll[V any](groups map[string]V) []string {
 	return append(slices.Sorted(maps.Keys(groups)), "all")
 }
 
@@ -598,12 +630,100 @@ func cell[K comparable](m map[K]float64, k K) string {
 	return ""
 }
 
+func early(lags []float64) float64 { return share(lags, func(x float64) bool { return x < -10 }) }
+
+func late(lags []float64) float64 { return share(lags, func(x float64) bool { return x > 30 }) }
+
+func perHour(n int, hours float64) float64 { return float64(n) / math.Max(hours, 1e-9) }
+
+// top returns the n keys with the highest scores, ties in key order.
+func top(keys iter.Seq[string], n int, score func(string) float64) []string {
+	sorted := slices.SortedFunc(keys, func(a, b string) int { return cmp.Or(cmp.Compare(score(b), score(a)), cmp.Compare(a, b)) })
+	return sorted[:min(n, len(sorted))]
+}
+
 func meanAbs(values []float64) float64 {
 	sum := 0.0
 	for _, v := range values {
 		sum += math.Abs(v)
 	}
 	return sum / float64(max(1, len(values)))
+}
+
+type lagRow struct {
+	key stopKey
+	slot
+	ref time.Time
+	lag map[string]float64
+}
+
+func groupBy[K comparable](rows []lagRow, key func(lagRow) K) map[K][]lagRow {
+	out := map[K][]lagRow{}
+	for _, r := range rows {
+		out[key(r)] = append(out[key(r)], r)
+	}
+	return out
+}
+
+// lagStats counts the arrivals each path reached, and sorts the lags of those
+// both reached, so the paths are compared like for like.
+type lagStats struct {
+	refs            int
+	covered, jumped map[string]int
+	lags            map[string][]float64
+}
+
+func summarize(rows []lagRow, results map[string]result) lagStats {
+	s := lagStats{len(rows), map[string]int{}, map[string]int{}, map[string][]float64{}}
+	for _, r := range rows {
+		for _, p := range paths {
+			if _, ok := r.lag[p]; ok {
+				s.covered[p]++
+				if results[p].jumped[r.key] {
+					s.jumped[p]++
+				}
+			}
+		}
+		if len(r.lag) == len(paths) {
+			for _, p := range paths {
+				s.lags[p] = append(s.lags[p], r.lag[p])
+			}
+		}
+	}
+	for _, v := range s.lags {
+		slices.Sort(v)
+	}
+	return s
+}
+
+func breakdown[K cmp.Ordered](title, heading string, lags []lagRow, results map[string]result, key func(slot) K, label func(K) string) {
+	rows := groupBy(lags, func(r lagRow) K { return key(r.slot) })
+	keys := map[K]bool{}
+	for k := range rows {
+		keys[k] = true
+	}
+	for _, p := range paths {
+		for s := range results[p].tallies {
+			keys[key(s)] = true
+		}
+	}
+	fmt.Println(title)
+	fmt.Printf("%-10s %-19s %6s %8s %7s %7s %8s %8s %8s %8s %8s %8s\n", heading, "path", "refs", "covered", "jumped", "median", ">10s er", ">30s lt", "train-h", "jumps/h", "back/h", "sprints")
+	for _, k := range slices.Sorted(maps.Keys(keys)) {
+		s := summarize(rows[k], results)
+		for _, p := range paths {
+			sum := results[p].total(func(s slot) bool { return key(s) == k })
+			hours := float64(sum.seconds) / 3600
+			v := s.lags[p]
+			fmt.Printf("%-10s %-19s %6d %7.0f%% %6.0f%% %7.0f %7.1f%% %7.1f%% %8.1f %8.2f %8.2f %7.1f%%\n", label(k), p, s.refs,
+				pct(s.covered[p], s.refs), pct(s.jumped[p], s.covered[p]), quantile(v, 0.5), early(v), late(v),
+				hours, perHour(len(sum.leaps), hours), perHour(sum.backSteps, hours), pct(sum.sprints, sum.seconds))
+		}
+	}
+}
+
+func routeList(routes map[string]bool) string {
+	return strings.Join(slices.Sorted(maps.Keys(routes)), " ")
 }
 
 func TestEval(t *testing.T) {
@@ -639,6 +759,11 @@ func TestEval(t *testing.T) {
 	if files, err = clip(files, *evalWarmup); err != nil {
 		t.Fatal(err)
 	}
+	stopNames, err := column(zipped, "stops.txt", "stop_id", "stop_name")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// A first pass collects the GPS fixes, as each turns up in a fetch after the
 	// timestamp the replay scores it at. The second pass replays.
 	refs := references{data, groups, map[string]string{}, map[stopKey]arrival{}}
@@ -708,18 +833,12 @@ func TestEval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	type lagRow struct {
-		key   stopKey
-		group string
-		ref   time.Time
-		lag   map[string]float64
-	}
 	var lags []lagRow
 	for k, a := range refs.arrivals {
 		if a.at.Before(scoreFrom) || a.at.After(end.Add(-2*time.Minute)) {
 			continue
 		}
-		row := lagRow{k, a.group, a.at, map[string]float64{}}
+		row := lagRow{k, slot{a.group, a.route, hourOf(a.at).Unix()}, a.at, map[string]float64{}}
 		for _, p := range paths {
 			if at, ok := results[p].firstDrawn[k]; ok {
 				row.lag[p] = at.Sub(a.at).Seconds()
@@ -727,46 +846,26 @@ func TestEval(t *testing.T) {
 		}
 		lags = append(lags, row)
 	}
-	sort.Slice(lags, func(i, j int) bool { return lags[i].ref.Before(lags[j].ref) })
+	slices.SortFunc(lags, func(a, b lagRow) int {
+		return cmp.Or(a.ref.Compare(b.ref), cmp.Compare(a.key.trip, b.key.trip), cmp.Compare(a.key.stop, b.key.stop))
+	})
 
-	lagGroups := map[string]bool{}
-	for _, r := range lags {
-		lagGroups[r.group] = true
-	}
-	groupNames := withAll(lagGroups)
+	byGroup := groupBy(lags, func(r lagRow) string { return r.group })
+	groupNames := withAll(byGroup)
 
 	fmt.Println("\nARRIVAL LAG: drawn arrival minus the vehicle's first STOPPED_AT timestamp (seconds, + is late)")
 	fmt.Println("Covered counts arrivals each path reached, jumped those it reached by moving the train past the stop; the lag columns use only arrivals both reached.")
 	fmt.Printf("%-14s %-19s %6s %8s %7s %7s %7s %7s %7s %8s %8s\n", "group", "path", "refs", "covered", "jumped", "median", "mean|x|", "p10", "p90", ">10s er", ">30s lt")
 	for _, g := range groupNames {
-		both := map[string][]float64{}
-		covered, jumped := map[string]int{}, map[string]int{}
-		n := 0
-		for _, r := range lags {
-			if g != "all" && r.group != g {
-				continue
-			}
-			n++
-			for _, p := range paths {
-				if _, ok := r.lag[p]; ok {
-					covered[p]++
-					if results[p].jumped[r.key] {
-						jumped[p]++
-					}
-				}
-			}
-			if len(r.lag) == len(paths) {
-				for _, p := range paths {
-					both[p] = append(both[p], r.lag[p])
-				}
-			}
+		rows := lags
+		if g != "all" {
+			rows = byGroup[g]
 		}
+		s := summarize(rows, results)
 		for _, p := range paths {
-			v := both[p]
-			sort.Float64s(v)
-			fmt.Printf("%-14s %-19s %6d %7.0f%% %6.0f%% %7.0f %7.0f %7.0f %7.0f %7.1f%% %7.1f%%\n", g, p, n,
-				pct(covered[p], n), pct(jumped[p], covered[p]), quantile(v, 0.5), meanAbs(v), quantile(v, 0.1), quantile(v, 0.9),
-				share(v, func(x float64) bool { return x < -10 }), share(v, func(x float64) bool { return x > 30 }))
+			v := s.lags[p]
+			fmt.Printf("%-14s %-19s %6d %7.0f%% %6.0f%% %7.0f %7.0f %7.0f %7.0f %7.1f%% %7.1f%%\n", g, p, s.refs,
+				pct(s.covered[p], s.refs), pct(s.jumped[p], s.covered[p]), quantile(v, 0.5), meanAbs(v), quantile(v, 0.1), quantile(v, 0.9), early(v), late(v))
 		}
 	}
 
@@ -774,9 +873,9 @@ func TestEval(t *testing.T) {
 	fmt.Printf("%-14s %-19s %8s %7s %10s %9s %9s\n", "group", "path", "train-h", "jumps", "per tr-h", "median m", "max m")
 	for _, g := range groupNames {
 		for _, p := range paths {
-			sum := results[p].total(g)
+			sum := results[p].total(inGroup(g))
 			hours := float64(sum.seconds) / 3600
-			fmt.Printf("%-14s %-19s %8.1f %7d %10.1f %9.0f %9.0f\n", g, p, hours, len(sum.leaps), float64(len(sum.leaps))/math.Max(hours, 1e-9), quantile(sum.leaps, 0.5), quantile(sum.leaps, 1))
+			fmt.Printf("%-14s %-19s %8.1f %7d %10.1f %9.0f %9.0f\n", g, p, hours, len(sum.leaps), perHour(len(sum.leaps), hours), quantile(sum.leaps, 0.5), quantile(sum.leaps, 1))
 		}
 	}
 
@@ -785,9 +884,9 @@ func TestEval(t *testing.T) {
 	fmt.Printf("%-14s %-19s %8s %7s %10s %9s %8s\n", "group", "path", "train-h", "back", "per tr-h", "returned", "sprints")
 	for _, g := range groupNames {
 		for _, p := range paths {
-			sum := results[p].total(g)
+			sum := results[p].total(inGroup(g))
 			hours := float64(sum.seconds) / 3600
-			fmt.Printf("%-14s %-19s %8.1f %7d %10.2f %9d %7.1f%%\n", g, p, hours, sum.backSteps, float64(sum.backSteps)/math.Max(hours, 1e-9), sum.returned, pct(sum.sprints, sum.seconds))
+			fmt.Printf("%-14s %-19s %8.1f %7d %10.2f %9d %7.1f%%\n", g, p, hours, sum.backSteps, perHour(sum.backSteps, hours), sum.returned, pct(sum.sprints, sum.seconds))
 		}
 	}
 
@@ -824,7 +923,7 @@ func TestEval(t *testing.T) {
 			}
 			for _, p := range paths {
 				v := both[p]
-				sort.Float64s(v)
+				slices.Sort(v)
 				fmt.Printf("%-14s %-19s %6d %7.0f%% %7.0f %7.0f %7.0f %6.1f%% %6.1f%%\n", g, p, n,
 					pct(covered[p], n), quantile(v, 0.5), meanAbs(v), quantile(v, 0.9),
 					share(v, func(x float64) bool { return x < 100 }), share(v, func(x float64) bool { return x < 250 }))
@@ -856,11 +955,65 @@ func TestEval(t *testing.T) {
 			}
 			for _, p := range paths {
 				a, o := alongs[p], aways[p]
-				sort.Float64s(a)
-				sort.Float64s(o)
+				slices.Sort(a)
+				slices.Sort(o)
 				fmt.Printf("%-14s %-19s %6d %7.0f %7.0f %7.0f %7.0f %8.0f %8.0f\n", g, p, len(a),
 					quantile(a, 0.5), meanAbs(a), quantile(a, 0.1), quantile(a, 0.9), quantile(o, 0.5), quantile(o, 0.9))
 			}
+		}
+	}
+
+	breakdown("\nBY HOUR: arrivals by the hour of their reference time, train time by the hour it was drawn", "hour", lags, results,
+		func(s slot) int64 { return s.hour }, func(h int64) string { return time.Unix(h, 0).Format("Mon 15:04") })
+	breakdown("\nBY ROUTE", "route", lags, results,
+		func(s slot) string { return s.route }, func(r string) string { return r })
+
+	const listed, minArrivals = 10, 30
+	fmt.Printf("\nSTOPS FURTHEST OFF: each path's highest mean |lag|, among stops with at least %d arrivals both paths reached\n", minArrivals)
+	fmt.Printf("%-19s %-8s %-24s %-14s %6s %7s %7s %8s %8s\n", "path", "stop", "name", "routes", "refs", "median", "mean|x|", ">10s er", ">30s lt")
+	byStop := groupBy(lags, func(r lagRow) string { return r.key.stop })
+	stats := map[string]lagStats{}
+	stopRoutes := map[string]map[string]bool{}
+	var busy []string
+	for stop, rows := range byStop {
+		stats[stop] = summarize(rows, results)
+		if len(stats[stop].lags[pathA]) >= minArrivals {
+			busy = append(busy, stop)
+		}
+		stopRoutes[stop] = map[string]bool{}
+		for _, r := range rows {
+			stopRoutes[stop][r.route] = true
+		}
+	}
+	for _, p := range paths {
+		for _, stop := range top(slices.Values(busy), listed, func(s string) float64 { return meanAbs(stats[s].lags[p]) }) {
+			v := stats[stop].lags[p]
+			fmt.Printf("%-19s %-8s %-24.24s %-14.14s %6d %7.0f %7.0f %7.1f%% %7.1f%%\n", p, stop, stopNames[stop], routeList(stopRoutes[stop]), len(v),
+				quantile(v, 0.5), meanAbs(v), early(v), late(v))
+		}
+	}
+
+	fmt.Println("\nWHERE TRAINS JUMP OR STEP BACK: each path's stops with the most jumps and backward steps by trains drawn at or heading for them")
+	fmt.Printf("%-19s %-8s %-24s %-14s %7s %7s %9s %9s\n", "path", "stop", "name", "routes", "jumps", "back", "returned", "median m")
+	type place struct {
+		tally
+		routes map[string]bool
+	}
+	for _, p := range paths {
+		places := map[string]*place{}
+		for _, e := range results[p].events {
+			pl := places[e.from.stop]
+			if pl == nil {
+				pl = &place{routes: map[string]bool{}}
+				places[e.from.stop] = pl
+			}
+			pl.count(e)
+			pl.routes[e.route] = true
+		}
+		for _, stop := range top(maps.Keys(places), listed, func(s string) float64 { return float64(len(places[s].leaps) + places[s].backSteps) }) {
+			pl := places[stop]
+			slices.Sort(pl.leaps)
+			fmt.Printf("%-19s %-8s %-24.24s %-14.14s %7d %7d %9d %9.0f\n", p, stop, stopNames[stop], routeList(pl.routes), len(pl.leaps), pl.backSteps, pl.returned, quantile(pl.leaps, 0.5))
 		}
 	}
 
@@ -869,11 +1022,26 @@ func TestEval(t *testing.T) {
 			t.Fatal(err)
 		}
 		var b strings.Builder
-		b.WriteString("trip,stop,group,ref_unix,lag_a,lag_b\n")
+		b.WriteString("trip,stop,group,ref_unix,lag_a,lag_b,route\n")
 		for _, r := range lags {
-			fmt.Fprintf(&b, "%s,%s,%s,%d,%s,%s\n", r.key.trip, r.key.stop, r.group, r.ref.Unix(), cell(r.lag, pathA), cell(r.lag, pathB))
+			fmt.Fprintf(&b, "%s,%s,%s,%d,%s,%s,%s\n", r.key.trip, r.key.stop, r.group, r.ref.Unix(), cell(r.lag, pathA), cell(r.lag, pathB), r.route)
 		}
 		if err := os.WriteFile(filepath.Join(*evalOut, "arrivals.csv"), []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		b.Reset()
+		b.WriteString("path,kind,returned,trip,route,unix,from_stop,to_stop,from_lat,from_lon,lat,lon,metres\n")
+		for _, p := range paths {
+			events := results[p].events
+			slices.SortFunc(events, func(a, b event) int {
+				return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.trip, b.trip), cmp.Compare(a.kind, b.kind))
+			})
+			for _, e := range events {
+				fmt.Fprintf(&b, "%s,%s,%t,%s,%s,%d,%s,%s,%.6f,%.6f,%.6f,%.6f,%.0f\n", p[:1], e.kind, e.returned, e.trip, e.route, e.at.Unix(),
+					e.from.stop, e.to.stop, e.from.point.Lat, e.from.point.Lon, e.to.point.Lat, e.to.point.Lon, e.metres)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(*evalOut, "events.csv"), []byte(b.String()), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if len(fixesAt) > 0 {

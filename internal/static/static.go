@@ -254,7 +254,7 @@ func Parse(zipped []byte) (*Data, error) {
 
 func readStops(zr *zip.Reader) (map[string]geo.Point, error) {
 	stops := map[string]geo.Point{}
-	err := readTable(zr, "stops.txt", []string{"stop_id", "stop_lat", "stop_lon"}, func(row []string) error {
+	err := ReadTable(zr, "stops.txt", []string{"stop_id", "stop_lat", "stop_lon"}, func(row []string) error {
 		// Entrances and other places inside a station may have no position.
 		if strings.TrimSpace(row[1]) == "" && strings.TrimSpace(row[2]) == "" {
 			return nil
@@ -270,7 +270,7 @@ func readStops(zr *zip.Reader) (map[string]geo.Point, error) {
 // readable one still loads.
 func readLocation(zr *zip.Reader) (*time.Location, error) {
 	var location *time.Location
-	err := readTable(zr, "agency.txt", []string{"agency_timezone?"}, func(row []string) error {
+	err := ReadTable(zr, "agency.txt", []string{"agency_timezone?"}, func(row []string) error {
 		zone := strings.TrimSpace(row[0])
 		if location != nil || zone == "" {
 			return nil
@@ -291,7 +291,7 @@ func readLocation(zr *zip.Reader) (*time.Location, error) {
 
 func readTrips(zr *zip.Reader) (map[string]trip, error) {
 	trips := map[string]trip{}
-	err := readTable(zr, "trips.txt", []string{"trip_id", "route_id", "shape_id?"}, func(row []string) error {
+	err := ReadTable(zr, "trips.txt", []string{"trip_id", "route_id", "shape_id?"}, func(row []string) error {
 		trips[row[0]] = trip{route: row[1], shape: row[2]}
 		return nil
 	})
@@ -304,7 +304,7 @@ func readShapes(zr *zip.Reader) (map[string]geo.Line, error) {
 		point    geo.Point
 	}
 	points := map[string][]shapePoint{}
-	err := readTable(zr, "shapes.txt", []string{"shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"}, func(row []string) error {
+	err := ReadTable(zr, "shapes.txt", []string{"shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"}, func(row []string) error {
 		seq, err := strconv.Atoi(row[1])
 		if err != nil {
 			return err
@@ -332,7 +332,7 @@ func readShapes(zr *zip.Reader) (map[string]geo.Line, error) {
 func readStopTimes(zr *zip.Reader) (stopIDs []string, schedules map[string][]stopTime, err error) {
 	index := map[string]uint32{}
 	schedules = map[string][]stopTime{}
-	err = readTable(zr, "stop_times.txt", []string{"trip_id", "stop_id", "arrival_time?", "departure_time?", "stop_sequence"}, func(row []string) error {
+	err = ReadTable(zr, "stop_times.txt", []string{"trip_id", "stop_id", "arrival_time?", "departure_time?", "stop_sequence"}, func(row []string) error {
 		seq, err := strconv.ParseUint(row[4], 10, 32)
 		if err != nil {
 			return err
@@ -544,9 +544,9 @@ func parseClock(s string) int {
 	return total
 }
 
-// readTable calls each with the named columns of every row. A column named
+// ReadTable calls each with the named columns of every row. A column named
 // with a trailing "?" may be absent, and reads as empty.
-func readTable(zr *zip.Reader, name string, columns []string, each func(row []string) error) error {
+func ReadTable(zr *zip.Reader, name string, columns []string, each func(row []string) error) error {
 	f, err := zr.Open(name)
 	if err != nil {
 		return err
