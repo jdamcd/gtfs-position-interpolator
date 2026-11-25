@@ -5,7 +5,7 @@
 // alone). Run with:
 //
 //	go test -tags eval -run TestEval -v ./internal/track -args \
-//	  -captures dir [-static feed.zip] [-merge] [-out dir]
+//	  -captures dir [-static feed.zip] [-merge] [-out dir] [-from HH:MM] [-to HH:MM]
 package track
 
 import (
@@ -42,7 +42,9 @@ var (
 	evalCaptures = flag.String("captures", "", "capture directory, one subdirectory of <unix time>.pb.gz per feed")
 	evalMerge    = flag.Bool("merge", false, "the captures are split into tu and vp subdirectories, to be merged into one feed")
 	evalOut      = flag.String("out", "", "directory for per-event CSVs")
-	evalWarmup   = flag.Duration("warmup", 5*time.Minute, "time at the start of the capture left out of scoring")
+	evalWarmup   = flag.Duration("warmup", 5*time.Minute, "time replayed before scoring starts, from the capture's start or before -from")
+	evalFrom     = flag.String("from", "", "score from this local HH:MM, its first time in the capture")
+	evalTo       = flag.String("to", "", "end the replay at this local HH:MM, its first time after -from")
 	evalDebug    = flag.Float64("debug", 0, "print path A fixes further than this off the drawn leg")
 )
 
@@ -95,44 +97,93 @@ func readCapture(path string) (*gtfs.FeedMessage, error) {
 	return msg, proto.Unmarshal(body, msg)
 }
 
-type captured struct {
-	fetched time.Time
-	msg     *gtfs.FeedMessage
+type captureFile struct {
+	path, feed string
+	fetched    time.Time
 }
 
-func readCaptures(dir string) ([]captured, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.pb.gz"))
-	if err != nil {
-		return nil, err
+// listCaptures sorts the files by fetch time, keeping ties in pattern then
+// feed order so merge sees tu before vp. A file's feed is its directory.
+func listCaptures(patterns ...string) ([]captureFile, error) {
+	var files []captureFile
+	for _, pattern := range patterns {
+		names, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range names {
+			secs, err := strconv.ParseInt(strings.TrimSuffix(filepath.Base(p), ".pb.gz"), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", p, err)
+			}
+			files = append(files, captureFile{p, filepath.Base(filepath.Dir(p)), time.Unix(secs, 0)})
+		}
 	}
-	// Decoding is most of the load time, so files are read in parallel.
-	out := make([]captured, len(files))
+	slices.SortStableFunc(files, func(a, b captureFile) int { return a.fetched.Compare(b.fetched) })
+	return files, nil
+}
+
+// nextClock finds the start of the first hhmm minute, in t's zone, that
+// hasn't ended by t: -from 14:00 is the start of a capture begun at 14:00:02.
+func nextClock(hhmm string, t time.Time) (time.Time, error) {
+	c, err := time.Parse("15:04", hhmm)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%q is not an HH:MM time", hhmm)
+	}
+	y, m, d := t.Date()
+	at := time.Date(y, m, d, c.Hour(), c.Minute(), 0, 0, t.Location())
+	if at.Before(t.Truncate(time.Minute)) {
+		at = at.AddDate(0, 0, 1)
+	}
+	return at, nil
+}
+
+// clip keeps the files, which are in fetch order, from lead before -from to
+// -to, each resolved to its first time in the capture.
+func clip(files []captureFile, lead time.Duration) ([]captureFile, error) {
+	if (*evalFrom == "" && *evalTo == "") || len(files) == 0 {
+		return files, nil
+	}
+	first, last := files[0].fetched, files[len(files)-1].fetched
+	from, to := first, last
+	var err error
+	if *evalFrom != "" {
+		if from, err = nextClock(*evalFrom, first); err != nil {
+			return nil, err
+		}
+		if from.After(last) {
+			return nil, fmt.Errorf("-from %s is %s, after the capture ends at %s", *evalFrom, from.Format("Mon 15:04"), last.Format("Mon 15:04"))
+		}
+	}
+	if *evalTo != "" {
+		if to, err = nextClock(*evalTo, from.Add(time.Minute)); err != nil {
+			return nil, err
+		}
+	}
+	from = from.Add(-lead)
+	return slices.DeleteFunc(files, func(f captureFile) bool { return f.fetched.Before(from) || f.fetched.After(to) }), nil
+}
+
+// readCaptures decodes in parallel, as decoding is most of the load time.
+func readCaptures(files []captureFile) ([]*gtfs.FeedMessage, error) {
+	msgs := make([]*gtfs.FeedMessage, len(files))
 	errs := make([]error, len(files))
 	var wg sync.WaitGroup
 	limit := make(chan struct{}, runtime.GOMAXPROCS(0))
-	for i, p := range files {
+	for i, f := range files {
 		wg.Go(func() {
 			limit <- struct{}{}
 			defer func() { <-limit }()
-			secs, err := strconv.ParseInt(strings.TrimSuffix(filepath.Base(p), ".pb.gz"), 10, 64)
+			msg, err := readCapture(f.path)
 			if err != nil {
-				errs[i] = err
+				errs[i] = fmt.Errorf("%s: %w", f.path, err)
 				return
 			}
-			msg, err := readCapture(p)
-			if err != nil {
-				errs[i] = fmt.Errorf("%s: %w", p, err)
-				return
-			}
-			out[i] = captured{time.Unix(secs, 0), msg}
+			msgs[i] = msg
 		})
 	}
 	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].fetched.Before(out[j].fetched) })
-	return out, nil
+	return msgs, errors.Join(errs...)
 }
 
 func routeTypes(zipped []byte) (map[string]string, error) {
@@ -185,7 +236,11 @@ func keepRoutes(msg *gtfs.FeedMessage, keep map[string]string) {
 
 // loadStream reads the captures in fetch order. Vehicle positions are
 // recorded as fixes and then removed, so neither path can read them.
-func loadStream(dir string, merge bool, groups map[string]string) ([]input, []fix, error) {
+func loadStream(files []captureFile, merge bool, groups map[string]string) ([]input, []fix, error) {
+	msgs, err := readCaptures(files)
+	if err != nil {
+		return nil, nil, err
+	}
 	var fixes []fix
 	type fixID struct {
 		trip  string
@@ -211,56 +266,21 @@ func loadStream(dir string, merge bool, groups map[string]string) ([]input, []fi
 		}
 	}
 
-	if !merge {
-		subdirs, err := os.ReadDir(dir)
-		if err != nil {
-			return nil, nil, err
-		}
-		var stream []input
-		for _, d := range subdirs {
-			if !d.IsDir() {
-				continue
-			}
-			caps, err := readCaptures(filepath.Join(dir, d.Name()))
-			if err != nil {
-				return nil, nil, err
-			}
-			for _, c := range caps {
-				strip(c.msg, d.Name())
-				stream = append(stream, input{c.fetched, d.Name(), c.msg, true})
-			}
-		}
-		sort.SliceStable(stream, func(i, j int) bool { return stream[i].fetched.Before(stream[j].fetched) })
-		return stream, fixes, nil
-	}
-
-	tus, err := readCaptures(filepath.Join(dir, "tu"))
-	if err != nil {
-		return nil, nil, err
-	}
-	vps, err := readCaptures(filepath.Join(dir, "vp"))
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, c := range tus {
-		keepRoutes(c.msg, groups)
-	}
-	for _, c := range vps {
-		keepRoutes(c.msg, groups)
-		strip(c.msg, "")
-	}
 	var stream []input
 	var tu, vp *gtfs.FeedMessage
-	i, j := 0, 0
-	for i < len(tus) || j < len(vps) {
-		var at time.Time
-		tuChanged := false
-		if j == len(vps) || (i < len(tus) && !tus[i].fetched.After(vps[j].fetched)) {
-			tu, at, tuChanged = tus[i].msg, tus[i].fetched, true
-			i++
+	for i, f := range files {
+		msg := msgs[i]
+		if !merge {
+			strip(msg, f.feed)
+			stream = append(stream, input{f.fetched, f.feed, msg, true})
+			continue
+		}
+		keepRoutes(msg, groups)
+		if f.feed == "tu" {
+			tu = msg
 		} else {
-			vp, at = vps[j].msg, vps[j].fetched
-			j++
+			vp = msg
+			strip(msg, "")
 		}
 		if tu == nil || vp == nil {
 			continue
@@ -268,7 +288,7 @@ func loadStream(dir string, merge bool, groups map[string]string) ([]input, []fi
 		header := proto.Clone(tu.GetHeader()).(*gtfs.FeedHeader)
 		header.Timestamp = proto.Uint64(max(tu.GetHeader().GetTimestamp(), vp.GetHeader().GetTimestamp()))
 		merged := &gtfs.FeedMessage{Header: header, Entity: slices.Concat(tu.GetEntity(), vp.GetEntity())}
-		stream = append(stream, input{at, "merged", merged, tuChanged})
+		stream = append(stream, input{f.fetched, "merged", merged, f.feed == "tu"})
 	}
 	return stream, fixes, nil
 }
@@ -585,7 +605,18 @@ func TestEval(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stream, fixes, err := loadStream(*evalCaptures, *evalMerge, groups)
+	patterns := []string{filepath.Join(*evalCaptures, "*", "*.pb.gz")}
+	if *evalMerge {
+		patterns = []string{filepath.Join(*evalCaptures, "tu", "*.pb.gz"), filepath.Join(*evalCaptures, "vp", "*.pb.gz")}
+	}
+	files, err := listCaptures(patterns...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, err = clip(files, *evalWarmup); err != nil {
+		t.Fatal(err)
+	}
+	stream, fixes, err := loadStream(files, *evalMerge, groups)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +626,7 @@ func TestEval(t *testing.T) {
 	start, end := stream[0].fetched, stream[len(stream)-1].fetched
 	scoreFrom := start.Add(*evalWarmup)
 	fmt.Printf("window %s – %s (%s), %d snapshots, scored from %s\n",
-		start.Format("15:04:05"), end.Format("15:04:05 MST"), end.Sub(start).Round(time.Second), len(stream), scoreFrom.Format("15:04:05"))
+		start.Format("Mon 15:04:05"), end.Format("Mon 15:04:05 MST"), end.Sub(start).Round(time.Second), len(stream), scoreFrom.Format("15:04:05"))
 
 	fixesAt := map[int64][]int{}
 	var scored []int
@@ -807,14 +838,22 @@ func TestTrace(t *testing.T) {
 	if *evalTrace == "" || *evalCaptures == "" {
 		t.Skip("needs -trace and -captures")
 	}
-	caps, err := readCaptures(*evalCaptures)
+	files, err := listCaptures(filepath.Join(*evalCaptures, "*.pb.gz"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range caps {
-		for _, e := range c.msg.GetEntity() {
+	if files, err = clip(files, 0); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := readCaptures(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, f := range files {
+		msg := msgs[i]
+		for _, e := range msg.GetEntity() {
 			if v := e.GetVehicle(); v != nil && strings.Contains(v.GetTrip().GetTripId(), *evalTrace) {
-				fmt.Printf("%s hdr %s  VEH %-13s %-5s ts %s\n", c.fetched.Format("15:04:05"), time.Unix(int64(c.msg.GetHeader().GetTimestamp()), 0).Format("15:04:05"),
+				fmt.Printf("%s hdr %s  VEH %-13s %-5s ts %s\n", f.fetched.Format("15:04:05"), time.Unix(int64(msg.GetHeader().GetTimestamp()), 0).Format("15:04:05"),
 					v.GetCurrentStatus(), v.GetStopId(), time.Unix(int64(v.GetTimestamp()), 0).Format("15:04:05"))
 			}
 			if tu := e.GetTripUpdate(); tu != nil && strings.Contains(tu.GetTrip().GetTripId(), *evalTrace) {
@@ -825,7 +864,7 @@ func TestTrace(t *testing.T) {
 					}
 					fmt.Fprintf(&b, " %s arr %s dep %s |", u.GetStopId(), time.Unix(u.GetArrival().GetTime(), 0).Format("15:04:05"), time.Unix(u.GetDeparture().GetTime(), 0).Format("15:04:05"))
 				}
-				fmt.Printf("%s                TU %s\n", c.fetched.Format("15:04:05"), b.String())
+				fmt.Printf("%s                TU %s\n", f.fetched.Format("15:04:05"), b.String())
 			}
 		}
 	}
