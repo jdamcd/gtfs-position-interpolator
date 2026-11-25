@@ -63,6 +63,8 @@ type input struct {
 	feed      string
 	msg       *gtfs.FeedMessage
 	tuChanged bool
+	// Positions stripped from msg.
+	fixes []fix
 }
 
 type stopKey struct{ trip, stop string }
@@ -164,26 +166,61 @@ func clip(files []captureFile, lead time.Duration) ([]captureFile, error) {
 	return slices.DeleteFunc(files, func(f captureFile) bool { return f.fetched.Before(from) || f.fetched.After(to) }), nil
 }
 
-// readCaptures decodes in parallel, as decoding is most of the load time.
-func readCaptures(files []captureFile) ([]*gtfs.FeedMessage, error) {
-	msgs := make([]*gtfs.FeedMessage, len(files))
-	errs := make([]error, len(files))
-	var wg sync.WaitGroup
-	limit := make(chan struct{}, runtime.GOMAXPROCS(0))
-	for i, f := range files {
-		wg.Go(func() {
-			limit <- struct{}{}
-			defer func() { <-limit }()
-			msg, err := readCapture(f.path)
-			if err != nil {
-				errs[i] = fmt.Errorf("%s: %w", f.path, err)
-				return
-			}
-			msgs[i] = msg
-		})
+type decoded struct {
+	msgs []*gtfs.FeedMessage
+	err  error
+}
+
+// decodeAll decodes in parallel, as decoding is most of the load time.
+func decodeAll(files []captureFile) <-chan decoded {
+	out := make(chan decoded, 1)
+	go func() {
+		msgs := make([]*gtfs.FeedMessage, len(files))
+		errs := make([]error, len(files))
+		var wg sync.WaitGroup
+		limit := make(chan struct{}, runtime.GOMAXPROCS(0))
+		for i, f := range files {
+			wg.Go(func() {
+				limit <- struct{}{}
+				defer func() { <-limit }()
+				msg, err := readCapture(f.path)
+				if err != nil {
+					errs[i] = fmt.Errorf("%s: %w", f.path, err)
+					return
+				}
+				msgs[i] = msg
+			})
+		}
+		wg.Wait()
+		out <- decoded{msgs, errors.Join(errs...)}
+	}()
+	return out
+}
+
+// decode works a chunk at a time, decoding the next while each runs on this
+// one: a day of captures decoded at once would need around 100GB.
+func decode(files []captureFile, each func(captureFile, *gtfs.FeedMessage)) error {
+	const chunk = 64
+	take := func() []captureFile {
+		c := files[:min(chunk, len(files))]
+		files = files[len(c):]
+		return c
 	}
-	wg.Wait()
-	return msgs, errors.Join(errs...)
+	cur := take()
+	pending := decodeAll(cur)
+	for len(cur) > 0 {
+		d := <-pending
+		if d.err != nil {
+			return d.err
+		}
+		next := take()
+		pending = decodeAll(next)
+		for i, f := range cur {
+			each(f, d.msgs[i])
+		}
+		cur = next
+	}
+	return nil
 }
 
 func routeTypes(zipped []byte) (map[string]string, error) {
@@ -234,63 +271,48 @@ func keepRoutes(msg *gtfs.FeedMessage, keep map[string]string) {
 	msg.Entity = kept
 }
 
-// loadStream reads the captures in fetch order. Vehicle positions are
-// recorded as fixes and then removed, so neither path can read them.
-func loadStream(files []captureFile, merge bool, groups map[string]string) ([]input, []fix, error) {
-	msgs, err := readCaptures(files)
-	if err != nil {
-		return nil, nil, err
-	}
+// strip removes the vehicle positions from msg, so neither path can read
+// them, and returns them as fixes.
+func strip(msg *gtfs.FeedMessage, feed string, groups map[string]string) []fix {
 	var fixes []fix
-	type fixID struct {
-		trip  string
-		stamp uint64
-	}
-	seenFix := map[fixID]bool{}
-	strip := func(msg *gtfs.FeedMessage, feed string) {
-		for _, e := range msg.GetEntity() {
-			v := e.GetVehicle()
-			if v == nil {
-				continue
-			}
-			if p := v.GetPosition(); p != nil && v.GetTrip().GetTripId() != "" {
-				key := tripKey(v.GetTrip())
-				id := fixID{key, v.GetTimestamp()}
-				if !seenFix[id] {
-					seenFix[id] = true
-					fixes = append(fixes, fix{key, time.Unix(int64(v.GetTimestamp()), 0),
-						geo.Point{Lat: float64(p.GetLatitude()), Lon: float64(p.GetLongitude())}, group(groups, feed, v.GetTrip())})
-				}
-			}
-			v.Position = nil
-		}
-	}
-
-	var stream []input
-	var tu, vp *gtfs.FeedMessage
-	for i, f := range files {
-		msg := msgs[i]
-		if !merge {
-			strip(msg, f.feed)
-			stream = append(stream, input{f.fetched, f.feed, msg, true})
+	for _, e := range msg.GetEntity() {
+		v := e.GetVehicle()
+		if v == nil {
 			continue
 		}
+		if p := v.GetPosition(); p != nil && v.GetTrip().GetTripId() != "" {
+			fixes = append(fixes, fix{tripKey(v.GetTrip()), time.Unix(int64(v.GetTimestamp()), 0),
+				geo.Point{Lat: float64(p.GetLatitude()), Lon: float64(p.GetLongitude())}, group(groups, feed, v.GetTrip())})
+		}
+		v.Position = nil
+	}
+	return fixes
+}
+
+// stream calls each with the messages as the poller would hand them to the
+// tracker: one per fetch, or with merge, tu and vp combined once both arrive.
+func stream(files []captureFile, merge bool, groups map[string]string, each func(input)) error {
+	var tu, vp *gtfs.FeedMessage
+	return decode(files, func(f captureFile, msg *gtfs.FeedMessage) {
+		if !merge {
+			each(input{f.fetched, f.feed, msg, true, strip(msg, f.feed, groups)})
+			return
+		}
 		keepRoutes(msg, groups)
+		var fixes []fix
 		if f.feed == "tu" {
 			tu = msg
 		} else {
-			vp = msg
-			strip(msg, "")
+			vp, fixes = msg, strip(msg, "", groups)
 		}
 		if tu == nil || vp == nil {
-			continue
+			return
 		}
 		header := proto.Clone(tu.GetHeader()).(*gtfs.FeedHeader)
 		header.Timestamp = proto.Uint64(max(tu.GetHeader().GetTimestamp(), vp.GetHeader().GetTimestamp()))
 		merged := &gtfs.FeedMessage{Header: header, Entity: slices.Concat(tu.GetEntity(), vp.GetEntity())}
-		stream = append(stream, input{f.fetched, "merged", merged, f.feed == "tu"})
-	}
-	return stream, fixes, nil
+		each(input{f.fetched, "merged", merged, f.feed == "tu", fixes})
+	})
 }
 
 func group(groups map[string]string, feed string, trip *gtfs.TripDescriptor) string {
@@ -300,42 +322,44 @@ func group(groups map[string]string, feed string, trip *gtfs.TripDescriptor) str
 	return feed
 }
 
-// referenceArrivals takes the first time each train's vehicle entity reports
-// it STOPPED_AT each stop, from the vehicle's own timestamp. A stop the train
-// is already at when first seen is left out, as it arrived before the
-// capture began.
-func referenceArrivals(stream []input, data *static.Data, groups map[string]string) map[stopKey]arrival {
-	out := map[stopKey]arrival{}
-	firstAt := map[string]string{}
-	for _, in := range stream {
-		for _, e := range in.msg.GetEntity() {
-			v := e.GetVehicle()
-			if v == nil || v.GetTrip().GetTripId() == "" {
-				continue
-			}
-			key := tripKey(v.GetTrip())
-			stopped := v.GetCurrentStatus() == gtfs.VehiclePosition_STOPPED_AT
-			if _, seen := firstAt[key]; !seen {
-				firstAt[key] = ""
-				if stopped {
-					firstAt[key] = v.GetStopId()
-				}
-			}
-			if !stopped || !data.HasStop(v.GetStopId()) || firstAt[key] == v.GetStopId() {
-				continue
-			}
-			k := stopKey{key, v.GetStopId()}
-			if _, ok := out[k]; ok {
-				continue
-			}
-			at := in.fetched
-			if ts := v.GetTimestamp(); ts != 0 {
-				at = time.Unix(int64(ts), 0)
-			}
-			out[k] = arrival{at, group(groups, in.feed, v.GetTrip())}
+// references takes the first time each train's vehicle entity reports it
+// STOPPED_AT each stop, from the vehicle's own timestamp. A stop the train is
+// already at when first seen is left out, as it arrived before the capture
+// began.
+type references struct {
+	data     *static.Data
+	groups   map[string]string
+	firstAt  map[string]string
+	arrivals map[stopKey]arrival
+}
+
+func (r *references) add(in input) {
+	for _, e := range in.msg.GetEntity() {
+		v := e.GetVehicle()
+		if v == nil || v.GetTrip().GetTripId() == "" {
+			continue
 		}
+		key := tripKey(v.GetTrip())
+		stopped := v.GetCurrentStatus() == gtfs.VehiclePosition_STOPPED_AT
+		if _, seen := r.firstAt[key]; !seen {
+			r.firstAt[key] = ""
+			if stopped {
+				r.firstAt[key] = v.GetStopId()
+			}
+		}
+		if !stopped || !r.data.HasStop(v.GetStopId()) || r.firstAt[key] == v.GetStopId() {
+			continue
+		}
+		k := stopKey{key, v.GetStopId()}
+		if _, ok := r.arrivals[k]; ok {
+			continue
+		}
+		at := in.fetched
+		if ts := v.GetTimestamp(); ts != 0 {
+			at = time.Unix(int64(ts), 0)
+		}
+		r.arrivals[k] = arrival{at, group(r.groups, in.feed, v.GetTrip())}
 	}
-	return out
 }
 
 func forPath(in input, path string) (*gtfs.FeedMessage, bool) {
@@ -438,7 +462,7 @@ func backwards(prev, cur drawnState) bool {
 	return votes > 0
 }
 
-func replay(data *static.Data, stream []input, path string, fixesAt map[int64][]int, fixes []fix, groups map[string]string, scoreFrom time.Time) result {
+func replay(data *static.Data, inputs <-chan input, path string, fixesAt map[int64][]int, fixes []fix, groups map[string]string, scoreFrom time.Time) result {
 	config := Config{MaxAge: 10 * time.Minute, Ramp: 15 * time.Second}
 	tracker := New(data, config)
 	res := result{
@@ -452,12 +476,11 @@ func replay(data *static.Data, stream []input, path string, fixesAt map[int64][]
 	lastTarget := map[string]string{}
 	lastStood := map[string]string{}
 	states, lastState := map[string]drawnState{}, map[string]drawnState{}
-	start, end := stream[0].fetched, stream[len(stream)-1].fetched
-	i := 0
-	for now := start; !now.After(end); now = now.Add(time.Second) {
-		for ; i < len(stream) && !stream[i].fetched.After(now); i++ {
-			if msg, ok := forPath(stream[i], path); ok {
-				tracker.Apply(stream[i].feed, msg, stream[i].fetched)
+	next, more := <-inputs
+	for now := next.fetched; more; now = now.Add(time.Second) {
+		for ; more && !next.fetched.After(now); next, more = <-inputs {
+			if msg, ok := forPath(next, path); ok {
+				tracker.Apply(next.feed, msg, next.fetched)
 			}
 		}
 		lastState, states = states, lastState
@@ -616,17 +639,40 @@ func TestEval(t *testing.T) {
 	if files, err = clip(files, *evalWarmup); err != nil {
 		t.Fatal(err)
 	}
-	stream, fixes, err := loadStream(files, *evalMerge, groups)
+	// A first pass collects the GPS fixes, as each turns up in a fetch after the
+	// timestamp the replay scores it at. The second pass replays.
+	refs := references{data, groups, map[string]string{}, map[stopKey]arrival{}}
+	var fixes []fix
+	type fixID struct {
+		trip string
+		at   int64
+	}
+	seenFix := map[fixID]bool{}
+	var start, end time.Time
+	snapshots := 0
+	err = stream(files, *evalMerge, groups, func(in input) {
+		if snapshots == 0 {
+			start = in.fetched
+		}
+		end = in.fetched
+		snapshots++
+		for _, f := range in.fixes {
+			if id := (fixID{f.trip, f.at.Unix()}); !seenFix[id] {
+				seenFix[id] = true
+				fixes = append(fixes, f)
+			}
+		}
+		refs.add(in)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stream) == 0 {
+	if snapshots == 0 {
 		t.Fatal("no captures")
 	}
-	start, end := stream[0].fetched, stream[len(stream)-1].fetched
 	scoreFrom := start.Add(*evalWarmup)
 	fmt.Printf("window %s – %s (%s), %d snapshots, scored from %s\n",
-		start.Format("Mon 15:04:05"), end.Format("Mon 15:04:05 MST"), end.Sub(start).Round(time.Second), len(stream), scoreFrom.Format("15:04:05"))
+		start.Format("Mon 15:04:05"), end.Format("Mon 15:04:05 MST"), end.Sub(start).Round(time.Second), snapshots, scoreFrom.Format("15:04:05"))
 
 	fixesAt := map[int64][]int{}
 	var scored []int
@@ -639,17 +685,29 @@ func TestEval(t *testing.T) {
 	results := map[string]result{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, p := range paths {
+	inputs := make([]chan input, len(paths))
+	for i, p := range paths {
+		inputs[i] = make(chan input, 64)
 		wg.Go(func() {
-			r := replay(data, stream, p, fixesAt, fixes, groups, scoreFrom)
+			r := replay(data, inputs[i], p, fixesAt, fixes, groups, scoreFrom)
 			mu.Lock()
 			results[p] = r
 			mu.Unlock()
 		})
 	}
+	err = stream(files, *evalMerge, groups, func(in input) {
+		for _, ch := range inputs {
+			ch <- in
+		}
+	})
+	for _, ch := range inputs {
+		close(ch)
+	}
 	wg.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	refs := referenceArrivals(stream, data, groups)
 	type lagRow struct {
 		key   stopKey
 		group string
@@ -657,7 +715,7 @@ func TestEval(t *testing.T) {
 		lag   map[string]float64
 	}
 	var lags []lagRow
-	for k, a := range refs {
+	for k, a := range refs.arrivals {
 		if a.at.Before(scoreFrom) || a.at.After(end.Add(-2*time.Minute)) {
 			continue
 		}
@@ -845,12 +903,7 @@ func TestTrace(t *testing.T) {
 	if files, err = clip(files, 0); err != nil {
 		t.Fatal(err)
 	}
-	msgs, err := readCaptures(files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, f := range files {
-		msg := msgs[i]
+	err = decode(files, func(f captureFile, msg *gtfs.FeedMessage) {
 		for _, e := range msg.GetEntity() {
 			if v := e.GetVehicle(); v != nil && strings.Contains(v.GetTrip().GetTripId(), *evalTrace) {
 				fmt.Printf("%s hdr %s  VEH %-13s %-5s ts %s\n", f.fetched.Format("15:04:05"), time.Unix(int64(msg.GetHeader().GetTimestamp()), 0).Format("15:04:05"),
@@ -867,5 +920,8 @@ func TestTrace(t *testing.T) {
 				fmt.Printf("%s                TU %s\n", f.fetched.Format("15:04:05"), b.String())
 			}
 		}
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
